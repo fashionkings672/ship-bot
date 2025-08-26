@@ -49,6 +49,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("telegram_shipbot")
 session = requests.Session()
 pickup_map = {}
+shipment_awb_map = {}  # store shipment_id -> awb mapping
 
 # ---------------- HELPERS ----------------
 def strict_phone(ph):
@@ -58,7 +59,6 @@ def strict_phone(ph):
     return ph if len(ph) == 10 and ph[0] in "6789" else None
 
 def parse_payment(payment_str):
-    # payment_str example: "Prepaid 2000" or "COD 2400"
     m = re.match(r"(prepaid|cod)\s+(\d+\.?\d*)", (payment_str or "").strip(), re.I)
     if not m:
         return "Prepaid", 0
@@ -146,27 +146,6 @@ def get_available_couriers(pickup_pin, delivery_pin, weight, cod):
     except Exception:
         return []
 
-def pick_courier(couriers):
-    if not couriers: return None
-    for pr in COURIER_PRIORITY:
-        options = [c for c in couriers if pr in (str(c.get("courier_name") or "").lower())]
-        if options:
-            return min(options, key=lambda x:x.get("rate",1e12))
-    return min(couriers, key=lambda x:x.get("rate",1e12))
-
-def get_shipping_quote(pickup_pin, delivery_pin, weight, cod):
-    try:
-        r = session.get(SHIPROCKET_BASE + URLS["get_quote"], params={
-            "pickup_postcode": pickup_pin,
-            "delivery_postcode": delivery_pin,
-            "weight": weight,
-            "cod": int(bool(cod))
-        }, timeout=15)
-        if r.status_code != 200: return None
-        return r.json().get("data", {}).get("rate")
-    except Exception:
-        return None
-
 def assign_awb(shipment_id, courier_id=None):
     try:
         payload = {"shipment_id": shipment_id}
@@ -202,34 +181,27 @@ def create_order(payload):
     except Exception as e:
         return None, str(e)
 
-def schedule_shipment(shipment_id):
+def schedule_shipment_by_awb(awb_code):
     try:
-        r = session.post(SHIPROCKET_BASE + URLS["schedule_shipment"], json={"shipment_id": shipment_id}, timeout=20)
+        r = session.post(SHIPROCKET_BASE + URLS["schedule_shipment"], json={"awb": awb_code}, timeout=20)
         resp_json = r.json() if r else {}
-        return resp_json.get("message") or "Shipment scheduled."
+        if resp_json.get("status_code") == 1:
+            return f"Shipment scheduled successfully (AWB: {awb_code})"
+        return f"❌ Could not schedule shipment: {resp_json.get('message') or 'Unknown error'}"
     except Exception as e:
         return f"Error scheduling shipment: {e}"
 
 # ---------------- NEW: create_shipment_with_fallback ----------------
 def create_shipment_with_fallback(shipment_id, pickup_pin, delivery_pin, weight, cod):
-    """
-    Try available couriers in priority order to assign AWB.
-    Priority: Bluedart -> Delhivery -> DTDC -> others
-    Uses get_available_couriers() and assign_awb().
-    Returns (courier_object, awb_code, rate) or (None, None, None)
-    """
     couriers = get_available_couriers(pickup_pin, delivery_pin, weight, cod)
-    if not couriers:
-        return None, None, None
+    if not couriers: return None, None, None
 
-    # helper: determine mode preference (prefer surface over air)
     def mode_pref(c):
         m = str(c.get("mode") or c.get("service_type") or "").lower()
         if "surface" in m: return 0
         if "air" in m: return 1
         return 2
 
-    # If user supplied a courier_priority.json (optional), try to use it
     priority_json = None
     if os.path.exists("courier_priority.json"):
         try:
@@ -238,7 +210,6 @@ def create_shipment_with_fallback(shipment_id, pickup_pin, delivery_pin, weight,
             priority_json = None
 
     def priority_key(c):
-        # check JSON mapping first (keys like "Bluedart Surface")
         if priority_json:
             name = str(c.get("courier_name") or "").strip()
             mode = str(c.get("mode") or c.get("service_type") or "").strip()
@@ -246,35 +217,21 @@ def create_shipment_with_fallback(shipment_id, pickup_pin, delivery_pin, weight,
             val = priority_json.get(key)
             if isinstance(val, int):
                 return (val, mode_pref(c), c.get("rate", 1e12))
-        # fallback simple rules
         name_lower = str(c.get("courier_name") or "").lower()
-        if "bluedart" in name_lower:
-            base = 1
-        elif "delhivery" in name_lower:
-            base = 2
-        elif "dtdc" in name_lower:
-            base = 3
-        else:
-            base = 99
-        return (base, mode_pref(c), c.get("rate", 1e12))
+        if "bluedart" in name_lower: base=1
+        elif "delhivery" in name_lower: base=2
+        elif "dtdc" in name_lower: base=3
+        else: base=99
+        return (base, mode_pref(c), c.get("rate",1e12))
 
     couriers_sorted = sorted(couriers, key=lambda c: priority_key(c))
 
-    # try each courier to assign AWB
     for courier in couriers_sorted:
-        # robustly fetch courier id field
-        courier_id = (courier.get("courier_company_id") or
-                      courier.get("courier_id") or
-                      courier.get("courierId") or
-                      courier.get("id"))
-        if not courier_id:
-            # skip if no id
-            continue
-        try:
-            awb = assign_awb(shipment_id, courier_id)
-        except Exception:
-            awb = None
+        courier_id = courier.get("courier_company_id") or courier.get("courier_id") or courier.get("courierId") or courier.get("id")
+        if not courier_id: continue
+        awb = assign_awb(shipment_id, courier_id)
         if awb:
+            shipment_awb_map[shipment_id] = awb
             return courier, awb, courier.get("rate")
     return None, None, None
 
@@ -290,7 +247,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
-    # --- Add product ---
     if context.user_data.get("awaiting_product"):
         parts = text.strip().split()
         if len(parts) < 5:
@@ -308,32 +264,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         products = {}
         if os.path.exists(PRODUCTS_FILE):
             products = json.load(open(PRODUCTS_FILE))
-        products[product_name] = {"length": length, "breadth": breadth, "height": height, "weight": weight}
-        json.dump(products, open(PRODUCTS_FILE, "w"), indent=2)
-        context.user_data["awaiting_product"] = False
+        products[product_name] = {"length": length,"breadth": breadth,"height": height,"weight": weight}
+        json.dump(products, open(PRODUCTS_FILE,"w"), indent=2)
+        context.user_data["awaiting_product"]=False
         await update.message.reply_text(f"✅ Product '{product_name}' saved successfully")
         return
 
-    # --- Create shipment ---
     if context.user_data.get("awaiting_shipment"):
         try:
             formatted = ai_format_address(text)
-            # Parse formatted text
             data = {}
             for line in formatted.splitlines():
                 if ":" in line:
                     k,v=line.split(":",1)
                     data[k.strip().lower()]=v.strip()
-
-            # ✅ Payment handling (new)
             payment_method, sub_total = parse_payment(data.get("prepaid/cod","Prepaid 0"))
-            if payment_method.lower() == "prepaid":
-                sr_payment_method = "Prepaid"
-                cod_amount = 0
-            else:
-                sr_payment_method = "COD"
-                cod_amount = sub_total
-
+            sr_payment_method = "COD" if payment_method.lower()=="cod" else "Prepaid"
+            cod_amount = sub_total if sr_payment_method=="COD" else 0
             qty = int(data.get("quantity","1"))
             product_data = json.load(open(PRODUCTS_FILE)).get(data.get("product",""), DEFAULT_PRODUCT)
             pickup_obj = normalize_pickup_obj({"pickup": data.get("pickup")})
@@ -387,15 +334,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if CUSTOM_CHANNEL_ID:
                 payload["channel_id"]=CUSTOM_CHANNEL_ID
 
-            # create order (same as original)
             resp, err = create_order(payload)
             if not resp:
                 await update.message.reply_text(f"❌ Error creating shipment: {err}")
                 return
 
             shipment_id = resp.get("shipment_id")
-
-            # ---------------- NEW: use fallback AWB assignment ----------------
             courier, awb, rate = create_shipment_with_fallback(
                 shipment_id,
                 pickup_obj.get("pin_code","110001"),
@@ -403,11 +347,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 product_data.get("weight"),
                 sr_payment_method=="COD"
             )
-
             if not courier or not awb:
                 await update.message.reply_text("❌ No couriers available for this shipment")
                 return
 
+            shipment_awb_map[shipment_id] = awb
             label_url = generate_label(shipment_id)
             tracking_link = f"https://www.shiprocket.in/shipment-tracking/?awb={awb}" if awb else "N/A"
 
@@ -450,11 +394,15 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if data.startswith("schedule_yes_"):
         shipment_id = data.replace("schedule_yes_","")
-        msg = schedule_shipment(shipment_id)
+        awb_code = shipment_awb_map.get(shipment_id)
+        if not awb_code:
+            await query.edit_message_text(f"❌ AWB not found for shipment {shipment_id}")
+            return
+        msg = schedule_shipment_by_awb(awb_code)
         await query.edit_message_text(f"✅ {msg}")
     elif data.startswith("schedule_no_"):
         shipment_id = data.replace("schedule_no_","")
-        await query.edit_message_text(f"❌ Shipment not scheduled (AWB: {shipment_id})")
+        await query.edit_message_text(f"❌ Shipment not scheduled (AWB: {shipment_awb_map.get(shipment_id,'N/A')})")
 
 # ---------------- MAIN ----------------
 async def main():
