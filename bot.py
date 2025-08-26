@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("telegram_shipbot")
 session = requests.Session()
 pickup_map = {}
-shipment_awb_map = {}  # store shipment_id -> awb mapping
+shipment_awb_map = {}  # Ensure AWB mapping
 
 # ---------------- HELPERS ----------------
 def strict_phone(ph):
@@ -146,6 +146,27 @@ def get_available_couriers(pickup_pin, delivery_pin, weight, cod):
     except Exception:
         return []
 
+def pick_courier(couriers):
+    if not couriers: return None
+    for pr in COURIER_PRIORITY:
+        options = [c for c in couriers if pr in (str(c.get("courier_name") or "").lower())]
+        if options:
+            return min(options, key=lambda x:x.get("rate",1e12))
+    return min(couriers, key=lambda x:x.get("rate",1e12))
+
+def get_shipping_quote(pickup_pin, delivery_pin, weight, cod):
+    try:
+        r = session.get(SHIPROCKET_BASE + URLS["get_quote"], params={
+            "pickup_postcode": pickup_pin,
+            "delivery_postcode": delivery_pin,
+            "weight": weight,
+            "cod": int(bool(cod))
+        }, timeout=15)
+        if r.status_code != 200: return None
+        return r.json().get("data", {}).get("rate")
+    except Exception:
+        return None
+
 def assign_awb(shipment_id, courier_id=None):
     try:
         payload = {"shipment_id": shipment_id}
@@ -181,8 +202,9 @@ def create_order(payload):
     except Exception as e:
         return None, str(e)
 
-def schedule_shipment_by_awb(awb_code):
+def schedule_shipment(awb_code):
     try:
+        # Shiprocket requires AWB to schedule
         r = session.post(SHIPROCKET_BASE + URLS["schedule_shipment"], json={"awb": awb_code}, timeout=20)
         resp_json = r.json() if r else {}
         if resp_json.get("status_code") == 1:
@@ -194,7 +216,8 @@ def schedule_shipment_by_awb(awb_code):
 # ---------------- NEW: create_shipment_with_fallback ----------------
 def create_shipment_with_fallback(shipment_id, pickup_pin, delivery_pin, weight, cod):
     couriers = get_available_couriers(pickup_pin, delivery_pin, weight, cod)
-    if not couriers: return None, None, None
+    if not couriers:
+        return None, None, None
 
     def mode_pref(c):
         m = str(c.get("mode") or c.get("service_type") or "").lower()
@@ -218,20 +241,27 @@ def create_shipment_with_fallback(shipment_id, pickup_pin, delivery_pin, weight,
             if isinstance(val, int):
                 return (val, mode_pref(c), c.get("rate", 1e12))
         name_lower = str(c.get("courier_name") or "").lower()
-        if "bluedart" in name_lower: base=1
-        elif "delhivery" in name_lower: base=2
-        elif "dtdc" in name_lower: base=3
-        else: base=99
+        if "bluedart" in name_lower: base = 1
+        elif "delhivery" in name_lower: base = 2
+        elif "dtdc" in name_lower: base = 3
+        else: base = 99
         return (base, mode_pref(c), c.get("rate",1e12))
 
     couriers_sorted = sorted(couriers, key=lambda c: priority_key(c))
 
     for courier in couriers_sorted:
-        courier_id = courier.get("courier_company_id") or courier.get("courier_id") or courier.get("courierId") or courier.get("id")
-        if not courier_id: continue
-        awb = assign_awb(shipment_id, courier_id)
+        courier_id = (courier.get("courier_company_id") or
+                      courier.get("courier_id") or
+                      courier.get("courierId") or
+                      courier.get("id"))
+        if not courier_id:
+            continue
+        try:
+            awb = assign_awb(shipment_id, courier_id)
+        except Exception:
+            awb = None
         if awb:
-            shipment_awb_map[shipment_id] = awb
+            shipment_awb_map[shipment_id] = awb  # store AWB
             return courier, awb, courier.get("rate")
     return None, None, None
 
@@ -278,6 +308,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if ":" in line:
                     k,v=line.split(":",1)
                     data[k.strip().lower()]=v.strip()
+
             payment_method, sub_total = parse_payment(data.get("prepaid/cod","Prepaid 0"))
             sr_payment_method = "COD" if payment_method.lower()=="cod" else "Prepaid"
             cod_amount = sub_total if sr_payment_method=="COD" else 0
@@ -340,6 +371,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             shipment_id = resp.get("shipment_id")
+
             courier, awb, rate = create_shipment_with_fallback(
                 shipment_id,
                 pickup_obj.get("pin_code","110001"),
@@ -347,11 +379,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 product_data.get("weight"),
                 sr_payment_method=="COD"
             )
+
             if not courier or not awb:
                 await update.message.reply_text("❌ No couriers available for this shipment")
                 return
 
-            shipment_awb_map[shipment_id] = awb
+            shipment_awb_map[shipment_id] = awb  # ensure mapping
+
             label_url = generate_label(shipment_id)
             tracking_link = f"https://www.shiprocket.in/shipment-tracking/?awb={awb}" if awb else "N/A"
 
@@ -398,7 +432,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not awb_code:
             await query.edit_message_text(f"❌ AWB not found for shipment {shipment_id}")
             return
-        msg = schedule_shipment_by_awb(awb_code)
+        msg = schedule_shipment(awb_code)
         await query.edit_message_text(f"✅ {msg}")
     elif data.startswith("schedule_no_"):
         shipment_id = data.replace("schedule_no_","")
