@@ -425,18 +425,44 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_product"]=True
         await query.message.reply_text("Send product in format: ProductName length breadth height weight")
         return
+
     if data=="create_shipment":
         context.user_data["awaiting_shipment"]=True
         await query.message.reply_text("Send messy address/order to create shipment")
         return
+
     if data.startswith("schedule_yes_"):
         shipment_id = data.replace("schedule_yes_","")
         awb_code = shipment_awb_map.get(shipment_id)
+
         if not awb_code:
             await query.edit_message_text(f"❌ AWB not found for shipment {shipment_id}")
             return
+
+        # Step 1: Check AWB status
+        try:
+            r = session.get(f"{SHIPROCKET_BASE}/courier/track/awb/{awb_code}", timeout=15)
+            if r.status_code != 200:
+                await query.edit_message_text(f"❌ Could not fetch AWB status: {r.text}")
+                return
+            resp_json = r.json()
+            current_status = resp_json.get("tracking_data", {}).get("current_status", "").lower()
+
+            # Step 2: Only schedule if status allows
+            if "pickup generated" not in current_status and "ready" not in current_status:
+                await query.edit_message_text(
+                    f"❌ AWB {awb_code} is not ready for scheduling. Current status: {current_status}"
+                )
+                return
+
+        except Exception as e:
+            await query.edit_message_text(f"⚠️ Error checking AWB: {e}")
+            return
+
+        # Step 3: Schedule
         msg = schedule_shipment(awb_code)
         await query.edit_message_text(f"✅ {msg}")
+
     elif data.startswith("schedule_no_"):
         shipment_id = data.replace("schedule_no_","")
         await query.edit_message_text(f"❌ Shipment not scheduled (AWB: {shipment_awb_map.get(shipment_id,'N/A')})")
