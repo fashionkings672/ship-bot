@@ -216,8 +216,7 @@ def schedule_shipment(awb_code):
 # ---------------- NEW: create_shipment_with_fallback ----------------
 def create_shipment_with_fallback(shipment_id, pickup_pin, delivery_pin, weight, cod):
     couriers = get_available_couriers(pickup_pin, delivery_pin, weight, cod)
-    if not couriers:
-        return None, None, None
+    if not couriers: return None, None, None
 
     def mode_pref(c):
         m = str(c.get("mode") or c.get("service_type") or "").lower()
@@ -248,26 +247,27 @@ def create_shipment_with_fallback(shipment_id, pickup_pin, delivery_pin, weight,
         return (base, mode_pref(c), c.get("rate",1e12))
 
     couriers_sorted = sorted(couriers, key=lambda c: priority_key(c))
- for courier in couriers_sorted:
-    # robustly fetch courier id field
-    courier_id = (courier.get("courier_company_id") or
-                  courier.get("courier_id") or
-                  courier.get("courierId") or
-                  courier.get("id"))
-    if not courier_id:
-        log.info(f"Skipping courier {courier.get('courier_name')} (no ID found)")
-        continue
-    try:
-        awb = assign_awb(shipment_id, courier_id)
-        log.info(f"Trying courier {courier.get('courier_name')} -> AWB: {awb}")
-    except Exception as e:
-        log.error(f"Error assigning AWB for courier {courier.get('courier_name')}: {e}")
-        awb = None
-    if awb:
-        shipment_awb_map[shipment_id] = awb
-        return courier, awb, courier.get("rate")
-    return None, None, None
 
+    for courier in couriers_sorted:
+        courier_id = (courier.get("courier_company_id") or
+                      courier.get("courier_id") or
+                      courier.get("courierId") or
+                      courier.get("id"))
+        if not courier_id:
+            log.info(f"Skipping courier {courier.get('courier_name')} (no ID found)")
+            continue
+        try:
+            awb = assign_awb(shipment_id, courier_id)
+            log.info(f"Trying courier {courier.get('courier_name')} -> AWB: {awb}")
+        except Exception as e:
+            log.error(f"Error assigning AWB for courier {courier.get('courier_name')}: {e}")
+            awb = None
+        if awb:
+            shipment_awb_map[shipment_id] = awb
+            return courier, awb, courier.get("rate")
+
+    return None, None, None
+         
 # ---------------- TELEGRAM BOT ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
