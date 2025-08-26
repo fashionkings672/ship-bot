@@ -1,3 +1,7 @@
 python-telegram-bot>=20.0
 requests
 python-dotenv
+aiohttp==3.10.5
+openai>=1.30.0
+nest_asyncio==1.6.0
+
