@@ -54,9 +54,9 @@ shipment_awb_map = {}  # Ensure AWB mapping
 # ---------------- HELPERS ----------------
 def strict_phone(ph):
     if not ph:
-        return None
+        return ""
     ph = re.sub(r"\D", "", str(ph))
-    return ph if len(ph) == 10 and ph[0] in "6789" else None
+    return ph if len(ph) == 10 and ph[0] in "6789" else ""
 
 def parse_payment(payment_str):
     m = re.match(r"(prepaid|cod)\s+(\d+\.?\d*)", (payment_str or "").strip(), re.I)
@@ -146,14 +146,6 @@ def get_available_couriers(pickup_pin, delivery_pin, weight, cod):
     except Exception:
         return []
 
-def pick_courier(couriers):
-    if not couriers: return None
-    for pr in COURIER_PRIORITY:
-        options = [c for c in couriers if pr in (str(c.get("courier_name") or "").lower())]
-        if options:
-            return min(options, key=lambda x:x.get("rate",1e12))
-    return min(couriers, key=lambda x:x.get("rate",1e12))
-
 def get_shipping_quote(pickup_pin, delivery_pin, weight, cod):
     try:
         r = session.get(SHIPROCKET_BASE + URLS["get_quote"], params={
@@ -204,7 +196,6 @@ def create_order(payload):
 
 def schedule_shipment(awb_code):
     try:
-        # Shiprocket requires AWB to schedule
         r = session.post(SHIPROCKET_BASE + URLS["schedule_shipment"], json={"awb": awb_code}, timeout=20)
         resp_json = r.json() if r else {}
         if resp_json.get("status_code") == 1:
@@ -213,7 +204,7 @@ def schedule_shipment(awb_code):
     except Exception as e:
         return f"Error scheduling shipment: {e}"
 
-# ---------------- NEW: create_shipment_with_fallback ----------------
+# ---------------- COURIER FALLBACK ----------------
 def create_shipment_with_fallback(shipment_id, pickup_pin, delivery_pin, weight, cod):
     couriers = get_available_couriers(pickup_pin, delivery_pin, weight, cod)
     if not couriers: return None, None, None
@@ -267,16 +258,18 @@ def create_shipment_with_fallback(shipment_id, pickup_pin, delivery_pin, weight,
             return courier, awb, courier.get("rate")
 
     return None, None, None
-         
+
 # ---------------- TELEGRAM BOT ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("Add Product", callback_data="add_product")],
+        [InlineKeyboardButton("View Prices", callback_data="view_prices")],
         [InlineKeyboardButton("Create Shipment", callback_data="create_shipment")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("Welcome! Choose an action:", reply_markup=reply_markup)
 
+# ---------------- MESSAGE HANDLER ----------------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
@@ -316,6 +309,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sr_payment_method = "COD" if payment_method.lower()=="cod" else "Prepaid"
             cod_amount = sub_total if sr_payment_method=="COD" else 0
             qty = int(data.get("quantity","1"))
+
             product_data = json.load(open(PRODUCTS_FILE)).get(data.get("product",""), DEFAULT_PRODUCT)
             pickup_obj = normalize_pickup_obj({"pickup": data.get("pickup")})
             if not pickup_obj:
@@ -336,8 +330,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "billing_pincode": data.get("pincode","110001"),
                 "billing_email": "na@example.com",
                 "billing_isd_code":"91",
-                "billing_phone": data.get("phone",""),
-                "billing_alternate_phone":data.get("alternate phone",""),
+                "billing_phone": strict_phone(data.get("phone","")),
+                "billing_alternate_phone": strict_phone(data.get("alternate phone","")),
                 "shipping_is_billing":True,
                 "order_items":[{
                     "name": data.get("product",""),
@@ -374,7 +368,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             shipment_id = resp.get("shipment_id")
-
             courier, awb, rate = create_shipment_with_fallback(
                 shipment_id,
                 pickup_obj.get("pin_code","110001"),
@@ -387,7 +380,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ No couriers available for this shipment")
                 return
 
-            shipment_awb_map[shipment_id] = awb  # ensure mapping
+            shipment_awb_map[shipment_id] = awb
 
             label_url = generate_label(shipment_id)
             tracking_link = f"https://www.shiprocket.in/shipment-tracking/?awb={awb}" if awb else "N/A"
@@ -426,6 +419,15 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Send product in format: ProductName length breadth height weight")
         return
 
+    if data=="view_prices":
+        if not os.path.exists(PRODUCTS_FILE):
+            await query.message.reply_text("❌ No products found.")
+            return
+        products = json.load(open(PRODUCTS_FILE))
+        msg = "\n".join([f"{k}: {v['length']}x{v['breadth']}x{v['height']} cm, {v['weight']} kg" for k,v in products.items()])
+        await query.message.reply_text(f"📦 Product Prices:\n{msg}")
+        return
+
     if data=="create_shipment":
         context.user_data["awaiting_shipment"]=True
         await query.message.reply_text("Send messy address/order to create shipment")
@@ -448,7 +450,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             resp_json = r.json()
             current_status = resp_json.get("tracking_data", {}).get("current_status", "").lower()
 
-            # Step 2: Only schedule if status allows
             if "pickup generated" not in current_status and "ready" not in current_status:
                 await query.edit_message_text(
                     f"❌ AWB {awb_code} is not ready for scheduling. Current status: {current_status}"
@@ -459,7 +460,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"⚠️ Error checking AWB: {e}")
             return
 
-        # Step 3: Schedule
         msg = schedule_shipment(awb_code)
         await query.edit_message_text(f"✅ {msg}")
 
