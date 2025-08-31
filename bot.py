@@ -39,7 +39,7 @@ URLS = {
     "assign_awb": "/courier/assign/awb",
     "label": "/courier/generate/label",
     "get_quote": "/courier/charge/calculate",
-    "schedule_shipment": "/courier/schedule/shipment",
+    "generate_pickup": "/courier/generate/pickup",   # ✅ Correct endpoint
 }
 COURIER_PRIORITY = ["bluedart", "delhivery", "dtdc"]
 PRODUCTS_FILE = "products.json"
@@ -202,17 +202,26 @@ def create_order(payload):
     except Exception as e:
         return None, str(e)
 
-def schedule_shipment(awb_code):
+def schedule_pickup(shipment_ids, pickup_date=None, time_slot_id=None):
     try:
-        # Shiprocket requires AWB to schedule
-        r = session.post(SHIPROCKET_BASE + URLS["schedule_shipment"], json={"awb": awb_code}, timeout=20)
-        resp_json = r.json() if r else {}
-        if resp_json.get("status_code") == 1:
-            return f"Shipment scheduled successfully (AWB: {awb_code})"
-        return f"❌ Could not schedule shipment: {resp_json.get('message') or 'Unknown error'}"
-    except Exception as e:
-        return f"Error scheduling shipment: {e}"
+        payload = {"shipment_id": shipment_ids}
+        if pickup_date:
+            payload["pickup_date"] = pickup_date  # 'YYYY-MM-DD'
+        if time_slot_id:
+            payload["time_slot_id"] = time_slot_id  # optional
 
+        r = session.post(SHIPROCKET_BASE + URLS["generate_pickup"], json=payload, timeout=20)
+        resp_json = r.json() if r else {}
+
+        if r.status_code == 200:
+            pickup_id = (resp_json.get("pickup_id")
+                         or resp_json.get("response", {}).get("pickup_id")
+                         or resp_json.get("pickup_token_number"))
+            msg = resp_json.get("message") or "Pickup requested"
+            return True, f"{msg}. Pickup ID: {pickup_id or 'N/A'}"
+        return False, f"❌ Could not schedule pickup: {r.text}"
+    except Exception as e:
+        return False, f"Error scheduling pickup: {e}"
 # ---------------- NEW: create_shipment_with_fallback ----------------
 def create_shipment_with_fallback(shipment_id, pickup_pin, delivery_pin, weight, cod):
     couriers = get_available_couriers(pickup_pin, delivery_pin, weight, cod)
@@ -404,7 +413,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             await update.message.reply_document(document=data_pdf, filename=f"{awb}.pdf")
 
             keyboard = [
-                [InlineKeyboardButton("Schedule Shipment ✅", callback_data=f"schedule_yes_{shipment_id}")],
+                [InlineKeyboardButton("Schedule Pickup ✅", callback_data=f"schedule_yes_{shipment_id}")],
                 [InlineKeyboardButton("Do Not Schedule ❌", callback_data=f"schedule_no_{shipment_id}")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -432,41 +441,15 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("schedule_yes_"):
-        shipment_id = data.replace("schedule_yes_","")
-        awb_code = shipment_awb_map.get(shipment_id)
+        shipment_id = data.replace("schedule_yes_", "")
+        ids = [int(shipment_id)] if shipment_id.isdigit() else [shipment_id]
 
-        if not awb_code:
-            await query.edit_message_text(f"❌ AWB not found for shipment {shipment_id}")
-            return
-
-        # Step 1: Check AWB status
-        try:
-            r = session.get(f"{SHIPROCKET_BASE}/courier/track/awb/{awb_code}", timeout=15)
-            if r.status_code != 200:
-                await query.edit_message_text(f"❌ Could not fetch AWB status: {r.text}")
-                return
-            resp_json = r.json()
-            current_status = resp_json.get("tracking_data", {}).get("current_status", "").lower()
-
-            # Step 2: Only schedule if status allows
-            if "pickup generated" not in current_status and "ready" not in current_status:
-                await query.edit_message_text(
-                    f"❌ AWB {awb_code} is not ready for scheduling. Current status: {current_status}"
-                )
-                return
-
-        except Exception as e:
-            await query.edit_message_text(f"⚠️ Error checking AWB: {e}")
-            return
-
-        # Step 3: Schedule
-        msg = schedule_shipment(awb_code)
-        await query.edit_message_text(f"✅ {msg}")
+        ok, msg = schedule_pickup(ids)
+        await query.edit_message_text(("✅ " if ok else "❌ ") + msg)
 
     elif data.startswith("schedule_no_"):
-        shipment_id = data.replace("schedule_no_","")
-        await query.edit_message_text(f"❌ Shipment not scheduled (AWB: {shipment_awb_map.get(shipment_id,'N/A')})")
-
+        shipment_id = data.replace("schedule_no_", "")
+        await query.edit_message_text(f"❌ Shipment {shipment_id} not scheduled")
 # ---------------- MAIN ----------------
 async def main():
     log.info("Bot starting...")
