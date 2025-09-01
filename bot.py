@@ -222,18 +222,18 @@ def schedule_pickup(shipment_ids, pickup_date=None, time_slot_id=None):
 
         if r.status_code == 200:
             # ✅ Case 1: Fresh pickup scheduled
-        if resp_json.get("pickup_scheduled") or resp_json.get("status") == 1:
+            if resp_json.get("pickup_scheduled") or resp_json.get("status") == 1:
                 pickup_id = (resp_json.get("pickup_id")
                              or resp_json.get("response", {}).get("pickup_id")
                              or resp_json.get("pickup_token_number"))
                 return True, f"✅ Pickup scheduled successfully! Pickup ID: {pickup_id or 'N/A'}"
 
             # ✅ Case 2: Already scheduled (status=3)
-        if resp_json.get("status") == 3:
+            if resp_json.get("status") == 3:
                 return True, f"✅ Pickup already scheduled for {resp_json.get('pickup_scheduled_date')}.\n📦 {resp_json.get('data')}"
 
             # ⚠️ Case 3: Pickup already generated / duplicate request
-        if "already generated" in str(resp_json).lower():
+            if "already generated" in str(resp_json).lower():
                 return False, f"⚠️ Pickup already generated for this shipment.\n📦 {resp_json.get('data') or resp_json}"
 
             # ❌ Any other unexpected case
