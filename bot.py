@@ -206,40 +206,47 @@ def schedule_pickup(shipment_ids, pickup_date=None, time_slot_id=None):
     try:
         payload = {"shipment_id": shipment_ids}
         if pickup_date:
-            payload["pickup_date"] = pickup_date  # 'YYYY-MM-DD'
+            payload["pickup_date"] = pickup_date
         if time_slot_id:
-            payload["time_slot_id"] = time_slot_id  # optional
+            payload["time_slot_id"] = time_slot_id
 
         r = session.post(SHIPROCKET_BASE + URLS["generate_pickup"], json=payload, timeout=20)
-
-        # 🔎 Debug log
-        print("🚚 Shiprocket Pickup Response:", r.status_code, r.text)
 
         try:
             resp_json = r.json()
         except Exception:
-            return False, f"❌ Invalid response from Shiprocket: {r.text}"
+            return False, f"❌ Invalid response: {r.text}"
+
+        # Extract nested response safely
+        response_data = resp_json.get("response", {})
+        status = resp_json.get("status") or response_data.get("status")
+        pickup_id = (
+            resp_json.get("pickup_id")
+            or response_data.get("pickup_id")
+            or resp_json.get("pickup_token_number")
+            or response_data.get("pickup_token_number")
+        )
+        pickup_date_str = response_data.get("pickup_scheduled_date")
+        awb_info = response_data.get("data")
 
         if r.status_code == 200:
-            # ✅ Case 1: Fresh pickup scheduled
-            if resp_json.get("pickup_scheduled") or resp_json.get("status") == 1:
-                pickup_id = (resp_json.get("pickup_id")
-                             or resp_json.get("response", {}).get("pickup_id")
-                             or resp_json.get("pickup_token_number"))
+            # ✅ Case 1: Fresh pickup
+            if resp_json.get("pickup_scheduled") or status == 1:
                 return True, f"✅ Pickup scheduled successfully! Pickup ID: {pickup_id or 'N/A'}"
 
-            # ✅ Case 2: Already scheduled (status=3)
-            if resp_json.get("status") == 3:
-                return True, f"✅ Pickup already scheduled for {resp_json.get('pickup_scheduled_date')}.\n📦 {resp_json.get('data')}"
+            # ✅ Case 2: Already scheduled (status=3 inside response)
+            if status == 3:
+                return True, f"✅ Pickup already scheduled for {pickup_date_str}.\n📦 {awb_info}"
 
-            # ⚠️ Case 3: Pickup already generated / duplicate request
+            # ⚠️ Duplicate pickup
             if "already generated" in str(resp_json).lower():
-                return False, f"⚠️ Pickup already generated for this shipment.\n📦 {resp_json.get('data') or resp_json}"
+                return False, f"⚠️ Pickup already generated.\n📦 {awb_info}"
 
-            # ❌ Any other unexpected case
-            return False, f"❌ Pickup not scheduled: {resp_json.get('message') or resp_json}"
+            # ❌ Fallback
+            return False, f"❌ Pickup not scheduled: {resp_json}"
         else:
             return False, f"❌ API Error {r.status_code}: {resp_json}"
+
     except Exception as e:
         return False, f"⚠️ Error scheduling pickup: {e}"
 # ---------------- NEW: create_shipment_with_fallback ----------------
