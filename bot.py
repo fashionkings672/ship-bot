@@ -305,21 +305,88 @@ def create_shipment_with_fallback(shipment_id, pickup_pin, delivery_pin, weight,
     return None, None, None
          
 # ---------------- TELEGRAM BOT ----------------
+from telegram import ReplyKeyboardMarkup
+
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["➕ Add Product", "📋 View Products"],
+        ["📦 Create Shipment", "🔙 Cancel"]
+    ],
+    resize_keyboard=True
+)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("Add Product", callback_data="add_product")],
-        [InlineKeyboardButton("Create Shipment", callback_data="create_shipment")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Welcome! Choose an action:", reply_markup=reply_markup)
+    await update.message.reply_text("👋 Welcome! Use the buttons below:", reply_markup=MAIN_KEYBOARD)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+    text = update.message.text.strip()
 
+    # --- 0) If user is currently editing a product, handle that first ---
+    if context.user_data.get("editing_product"):
+        try:
+            parts = text.split()
+            if len(parts) < 5:
+                raise ValueError("bad format")
+            name = parts[0]
+            l = float(parts[1]); b = float(parts[2]); h = float(parts[3]); w = float(parts[4])
+            products = {}
+            if os.path.exists(PRODUCTS_FILE):
+                products = json.load(open(PRODUCTS_FILE))
+            old_name = context.user_data.pop("editing_product", None)
+            if old_name:
+                products.pop(old_name, None)
+            products[name] = {"length": l, "breadth": b, "height": h, "weight": w}
+            json.dump(products, open(PRODUCTS_FILE, "w"), indent=2)
+            await update.message.reply_text(f"✅ Product updated: {name}", reply_markup=MAIN_KEYBOARD)
+        except Exception:
+            await update.message.reply_text("❌ Wrong format. Use:\nName length breadth height weight", reply_markup=MAIN_KEYBOARD)
+        return
+
+    # --- 1) Keyboard actions ---
+    if text == "➕ Add Product":
+        context.user_data["awaiting_product"] = True
+        context.user_data["awaiting_shipment"] = False
+        await update.message.reply_text(
+            "Send product in format:\nProductName length breadth height weight",
+            reply_markup=MAIN_KEYBOARD
+        )
+        return
+
+    if text == "📋 View Products":
+        products = {}
+        if os.path.exists(PRODUCTS_FILE):
+            products = json.load(open(PRODUCTS_FILE))
+        if not products:
+            await update.message.reply_text("⚠️ No products saved yet.", reply_markup=MAIN_KEYBOARD)
+            return
+        # send each product with inline edit/delete buttons
+        for name, prod in products.items():
+            text_prod = f"{name}: {prod['length']}x{prod['breadth']}x{prod['height']} | {prod['weight']}kg"
+            kb = [[
+                InlineKeyboardButton("✏ Edit", callback_data=f"edit_{name}"),
+                InlineKeyboardButton("❌ Delete", callback_data=f"delete_{name}")
+            ]]
+            await update.message.reply_text(text_prod, reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if text == "📦 Create Shipment":
+        context.user_data["awaiting_shipment"] = True
+        context.user_data["awaiting_product"] = False
+        await update.message.reply_text("Send messy address/order to create shipment.", reply_markup=MAIN_KEYBOARD)
+        return
+
+    if text == "🔙 Cancel":
+        context.user_data.pop("awaiting_product", None)
+        context.user_data.pop("awaiting_shipment", None)
+        context.user_data.pop("editing_product", None)
+        await update.message.reply_text("✅ Cancelled. Back to main menu.", reply_markup=MAIN_KEYBOARD)
+        return
+
+    # --- 2) Add product (user typed product details) ---
     if context.user_data.get("awaiting_product"):
         parts = text.strip().split()
         if len(parts) < 5:
-            await update.message.reply_text("❌ Invalid format. Send: ProductName length breadth height weight")
+            await update.message.reply_text("❌ Invalid format. Send: ProductName length breadth height weight", reply_markup=MAIN_KEYBOARD)
             return
         try:
             length = float(parts[-4])
@@ -327,7 +394,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             height = float(parts[-2])
             weight = float(parts[-1])
         except ValueError:
-            await update.message.reply_text("❌ Dimensions and weight must be numbers.")
+            await update.message.reply_text("❌ Dimensions and weight must be numbers.", reply_markup=MAIN_KEYBOARD)
             return
         product_name = " ".join(parts[:-4])
         products = {}
@@ -336,9 +403,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         products[product_name] = {"length": length,"breadth": breadth,"height": height,"weight": weight}
         json.dump(products, open(PRODUCTS_FILE,"w"), indent=2)
         context.user_data["awaiting_product"]=False
-        await update.message.reply_text(f"✅ Product '{product_name}' saved successfully")
+        await update.message.reply_text(f"✅ Product '{product_name}' saved successfully", reply_markup=MAIN_KEYBOARD)
         return
 
+    # --- 3) Create shipment (user typed messy address/order) ---
     if context.user_data.get("awaiting_shipment"):
         try:
             formatted = ai_format_address(text)
@@ -355,7 +423,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             product_data = json.load(open(PRODUCTS_FILE)).get(data.get("product",""), DEFAULT_PRODUCT)
             pickup_obj = normalize_pickup_obj({"pickup": data.get("pickup")})
             if not pickup_obj:
-                await update.message.reply_text("❌ Pickup not found in Shiprocket account")
+                await update.message.reply_text("❌ Pickup not found in Shiprocket account", reply_markup=MAIN_KEYBOARD)
                 return
 
             payload = {
@@ -406,7 +474,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             resp, err = create_order(payload)
             if not resp:
-                await update.message.reply_text(f"❌ Error creating shipment: {err}")
+                await update.message.reply_text(f"❌ Error creating shipment: {err}", reply_markup=MAIN_KEYBOARD)
                 return
 
             shipment_id = resp.get("shipment_id")
@@ -420,7 +488,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             if not courier or not awb:
-                await update.message.reply_text("❌ No couriers available for this shipment")
+                await update.message.reply_text("❌ No couriers available for this shipment", reply_markup=MAIN_KEYBOARD)
                 return
 
             shipment_awb_map[shipment_id] = awb  # ensure mapping
@@ -429,7 +497,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tracking_link = f"https://www.shiprocket.in/shipment-tracking/?awb={awb}" if awb else "N/A"
 
             await update.message.reply_text(
-                f"✅ Shipment Created!\nCourier: {courier.get('courier_name')}\nRate: {rate}\nAWB: {awb}\nTracking: {tracking_link}"
+                f"✅ Shipment Created!\nCourier: {courier.get('courier_name')}\nRate: {rate}\nAWB: {awb}\nTracking: {tracking_link}",
+                reply_markup=MAIN_KEYBOARD
             )
 
             if label_url:
@@ -439,44 +508,75 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             data_pdf = await resp_pdf.read()
                             await update.message.reply_document(document=data_pdf, filename=f"{awb}.pdf")
 
+            # --- Ask about pickup with inline buttons (only after shipment created) ---
             keyboard = [
-                [InlineKeyboardButton("Schedule Pickup ✅", callback_data=f"schedule_yes_{shipment_id}")],
-                [InlineKeyboardButton("Do Not Schedule ❌", callback_data=f"schedule_no_{shipment_id}")]
+                [
+                    InlineKeyboardButton("✅ Yes", callback_data=f"schedule_yes_{shipment_id}"),
+                    InlineKeyboardButton("❌ No", callback_data=f"schedule_no_{shipment_id}")
+                ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text("Do you want to schedule this shipment?", reply_markup=reply_markup)
+            await update.message.reply_text("Do you want to schedule pickup?", reply_markup=reply_markup)
 
         except Exception as e:
-            await update.message.reply_text(f"⚠️ Error: {e}")
+            await update.message.reply_text(f"⚠️ Error: {e}", reply_markup=MAIN_KEYBOARD)
         finally:
             context.user_data["awaiting_shipment"]=False
+        return
+
+    # If nothing matched
+    await update.message.reply_text("Please use the keyboard buttons.", reply_markup=MAIN_KEYBOARD)
 
 # ---------------- CALLBACK HANDLER ----------------
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    data = query.data
+    data = query.data or ""
 
-    if data=="add_product":
-        context.user_data["awaiting_product"]=True
-        await query.message.reply_text("Send product in format: ProductName length breadth height weight")
+    # --- Product delete ---
+    if data.startswith("delete_"):
+        name = data.split("delete_", 1)[1]
+        products = {}
+        if os.path.exists(PRODUCTS_FILE):
+            products = json.load(open(PRODUCTS_FILE))
+        if name in products:
+            products.pop(name)
+            json.dump(products, open(PRODUCTS_FILE, "w"), indent=2)
+            await query.edit_message_text(f"❌ Product '{name}' deleted.")
+        else:
+            await query.edit_message_text("❌ Product not found.")
         return
 
-    if data=="create_shipment":
-        context.user_data["awaiting_shipment"]=True
-        await query.message.reply_text("Send messy address/order to create shipment")
+    # --- Product edit ---
+    if data.startswith("edit_"):
+        name = data.split("edit_", 1)[1]
+        products = {}
+        if os.path.exists(PRODUCTS_FILE):
+            products = json.load(open(PRODUCTS_FILE))
+        if name in products:
+            # set edit state so next message updates product
+            context.user_data["editing_product"] = name
+            context.user_data["awaiting_product"] = True
+            await query.message.reply_text(f"✏ Send new details for '{name}' in format:\nName length breadth height weight", reply_markup=MAIN_KEYBOARD)
+        else:
+            await query.edit_message_text("❌ Product not found.")
         return
 
+    # --- Schedule pickup yes/no ---
     if data.startswith("schedule_yes_"):
         shipment_id = data.replace("schedule_yes_", "")
         ids = [int(shipment_id)] if shipment_id.isdigit() else [shipment_id]
-
         ok, msg = schedule_pickup(ids)
         await query.edit_message_text(("✅ " if ok else "❌ ") + msg)
+        return
 
-    elif data.startswith("schedule_no_"):
+    if data.startswith("schedule_no_"):
         shipment_id = data.replace("schedule_no_", "")
         await query.edit_message_text(f"❌ Shipment {shipment_id} not scheduled")
+        return
+
+    # fallback
+    await query.edit_message_text("⚠️ Unknown action")
 # ---------------- MAIN ----------------
 async def main():
     log.info("Bot starting...")
@@ -489,7 +589,7 @@ async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start",start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CallbackQueryHandler(button))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     await app.run_polling()
 
 if __name__=="__main__":
