@@ -212,7 +212,7 @@ def schedule_pickup(shipment_ids, pickup_date=None, time_slot_id=None):
 
         r = session.post(SHIPROCKET_BASE + URLS["generate_pickup"], json=payload, timeout=20)
 
-        # 🔎 Debug log — prints full response for troubleshooting
+        # 🔎 Debug log
         print("🚚 Shiprocket Pickup Response:", r.status_code, r.text)
 
         try:
@@ -221,13 +221,23 @@ def schedule_pickup(shipment_ids, pickup_date=None, time_slot_id=None):
             return False, f"❌ Invalid response from Shiprocket: {r.text}"
 
         if r.status_code == 200:
-            if resp_json.get("pickup_scheduled") or resp_json.get("status") == 1:
+            # ✅ Case 1: Fresh pickup scheduled
+        if resp_json.get("pickup_scheduled") or resp_json.get("status") == 1:
                 pickup_id = (resp_json.get("pickup_id")
                              or resp_json.get("response", {}).get("pickup_id")
                              or resp_json.get("pickup_token_number"))
-                return True, f"✅ Pickup scheduled! Pickup ID: {pickup_id or 'N/A'}"
-            else:
-                return False, f"❌ Pickup not scheduled: {resp_json.get('message') or resp_json.get('response')}"
+                return True, f"✅ Pickup scheduled successfully! Pickup ID: {pickup_id or 'N/A'}"
+
+            # ✅ Case 2: Already scheduled (status=3)
+        if resp_json.get("status") == 3:
+                return True, f"✅ Pickup already scheduled for {resp_json.get('pickup_scheduled_date')}.\n📦 {resp_json.get('data')}"
+
+            # ⚠️ Case 3: Pickup already generated / duplicate request
+        if "already generated" in str(resp_json).lower():
+                return False, f"⚠️ Pickup already generated for this shipment.\n📦 {resp_json.get('data') or resp_json}"
+
+            # ❌ Any other unexpected case
+            return False, f"❌ Pickup not scheduled: {resp_json.get('message') or resp_json}"
         else:
             return False, f"❌ API Error {r.status_code}: {resp_json}"
     except Exception as e:
