@@ -16,6 +16,9 @@ import asyncio
 import openai
 import aiohttp
 
+# --- STEP 1: GLOBAL USER STATE ---
+user_state = {}
+
 # ---------------- CONFIG ----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SHIPROCKET_EMAIL = os.getenv("SHIPROCKET_EMAIL")
@@ -316,8 +319,9 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()  # RESET ALL FLAGS
     await update.message.reply_text("👋 Welcome! Use the buttons below:", reply_markup=MAIN_KEYBOARD)
-
+    
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
@@ -533,6 +537,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data or ""
 
+    # --- RESET USER FLAGS ---
+    context.user_data.pop("awaiting_product", None)
+    context.user_data.pop("editing_product", None)
+    context.user_data.pop("awaiting_shipment", None)
+
     # --- Product delete ---
     if data.startswith("delete_"):
         name = data.split("delete_", 1)[1]
@@ -554,18 +563,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(PRODUCTS_FILE):
             products = json.load(open(PRODUCTS_FILE))
         if name in products:
-            # set edit state so next message updates product
             context.user_data["editing_product"] = name
             context.user_data["awaiting_product"] = True
-            await query.message.reply_text(f"✏ Send new details for '{name}' in format:\nName length breadth height weight", reply_markup=MAIN_KEYBOARD)
+            await query.message.reply_text(
+                f"✏ Send new details for '{name}' in format:\nName length breadth height weight",
+                reply_markup=MAIN_KEYBOARD
+            )
         else:
             await query.edit_message_text("❌ Product not found.")
         return
 
-    # --- Schedule pickup yes/no ---
+    # --- Schedule pickup ---
     if data.startswith("schedule_yes_"):
         shipment_id = data.replace("schedule_yes_", "")
-        ids = [int(shipment_id)] if shipment_id.isdigit() else [shipment_id]
+        ids = [shipment_id]  # keep as string UUID
         ok, msg = schedule_pickup(ids)
         await query.edit_message_text(("✅ " if ok else "❌ ") + msg)
         return
