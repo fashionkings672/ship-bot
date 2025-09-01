@@ -211,17 +211,27 @@ def schedule_pickup(shipment_ids, pickup_date=None, time_slot_id=None):
             payload["time_slot_id"] = time_slot_id  # optional
 
         r = session.post(SHIPROCKET_BASE + URLS["generate_pickup"], json=payload, timeout=20)
-        resp_json = r.json() if r else {}
+
+        # 🔎 Debug log — prints full response for troubleshooting
+        print("🚚 Shiprocket Pickup Response:", r.status_code, r.text)
+
+        try:
+            resp_json = r.json()
+        except Exception:
+            return False, f"❌ Invalid response from Shiprocket: {r.text}"
 
         if r.status_code == 200:
-            pickup_id = (resp_json.get("pickup_id")
-                         or resp_json.get("response", {}).get("pickup_id")
-                         or resp_json.get("pickup_token_number"))
-            msg = resp_json.get("message") or "Pickup requested"
-            return True, f"{msg}. Pickup ID: {pickup_id or 'N/A'}"
-        return False, f"❌ Could not schedule pickup: {r.text}"
+            if resp_json.get("pickup_scheduled") or resp_json.get("status") == 1:
+                pickup_id = (resp_json.get("pickup_id")
+                             or resp_json.get("response", {}).get("pickup_id")
+                             or resp_json.get("pickup_token_number"))
+                return True, f"✅ Pickup scheduled! Pickup ID: {pickup_id or 'N/A'}"
+            else:
+                return False, f"❌ Pickup not scheduled: {resp_json.get('message') or resp_json.get('response')}"
+        else:
+            return False, f"❌ API Error {r.status_code}: {resp_json}"
     except Exception as e:
-        return False, f"Error scheduling pickup: {e}"
+        return False, f"⚠️ Error scheduling pickup: {e}"
 # ---------------- NEW: create_shipment_with_fallback ----------------
 def create_shipment_with_fallback(shipment_id, pickup_pin, delivery_pin, weight, cod):
     couriers = get_available_couriers(pickup_pin, delivery_pin, weight, cod)
