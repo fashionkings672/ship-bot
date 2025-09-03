@@ -498,7 +498,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             shipment_awb_map[shipment_id] = awb  # ensure mapping
 
             label_url = generate_label(shipment_id)
-            tracking_link f"https://shiprocket.co/tracking/{awb}" if awb else "N/A"
+            tracking_link = f"https://shiprocket.co/tracking/{awb}" if awb else "N/A"
 
             await update.message.reply_text(
                 f"✅ Shipment Created!\nCourier: {courier.get('courier_name')}\nRate: {rate}\nAWB: {awb}\nTracking: {tracking_link}",
