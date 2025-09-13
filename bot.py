@@ -143,9 +143,10 @@ Quantity: <number_of_units>
         messages=[{"role":"user","content":prompt}],
         temperature=1
     )
-    formatted_text = response.choices.message.content.strip()
+    # ✅ FIXED: access first choice, not the list itself
+    formatted_text = response.choices[0].message.content.strip()
     return formatted_text
-
+    
 # ---------------- SHIPROCKET API ----------------
 def get_available_couriers(pickup_pin, delivery_pin, weight, cod):
     try:
