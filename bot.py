@@ -485,8 +485,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "height": float(product_data.get("height")),
                 "weight": float(product_data.get("weight")),
             }
-           if CUSTOM_CHANNEL_ID:
-    payload["channel_id"] = CUSTOM_CHANNEL_ID
+          # ✅ Add this safely inside the same indentation
+             if CUSTOM_CHANNEL_ID:
+        payload["channel_id"] = CUSTOM_CHANNEL_ID
 
 # --- Duplicate order check (Shiprocket API) ---
 recent_orders = []
