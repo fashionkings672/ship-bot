@@ -59,7 +59,7 @@ def strict_phone(ph):
     if not ph:
         return None
     ph = re.sub(r"\D", "", str(ph))
-    return ph if len(ph) == 10 and ph[0] in "6789" else None
+    return ph if len(ph) == 10 and ph in "6789" else None
 
 def parse_payment(payment_str):
     m = re.match(r"(prepaid|cod)\s+(\d+\.?\d*)", (payment_str or "").strip(), re.I)
@@ -143,7 +143,7 @@ Quantity: <number_of_units>
         messages=[{"role":"user","content":prompt}],
         temperature=1
     )
-    formatted_text = response.choices[0].message.content.strip()
+    formatted_text = response.choices.message.content.strip()
     return formatted_text
 
 # ---------------- SHIPROCKET API ----------------
@@ -343,7 +343,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parts = text.split()
             if len(parts) < 5:
                 raise ValueError("bad format")
-            name = parts[0]
+            name = parts
             l = float(parts[1]); b = float(parts[2]); h = float(parts[3]); w = float(parts[4])
             products = {}
             if os.path.exists(PRODUCTS_FILE):
@@ -485,99 +485,99 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "height": float(product_data.get("height")),
                 "weight": float(product_data.get("weight")),
             }
-# ✅ Add this safely inside the same indentation
-if CUSTOM_CHANNEL_ID:
-    payload["channel_id"] = CUSTOM_CHANNEL_ID
+            # ✅ Add this safely inside the same indentation
+            if CUSTOM_CHANNEL_ID:
+                payload["channel_id"] = CUSTOM_CHANNEL_ID
 
-# --- Duplicate order check (Shiprocket API) ---
-recent_orders = []
-try:
-    r = session.get(f"{SHIPROCKET_BASE}/orders", params={"search": data.get("phone","")}, timeout=15)
-    if r.status_code == 200:
-        recent_orders = r.json().get("data", [])
-except Exception as e:
-    log.error(f"Duplicate check failed: {e}")
+            # --- Duplicate order check (Shiprocket API) ---
+            recent_orders = []
+            try:
+                r = session.get(f"{SHIPROCKET_BASE}/orders", params={"search": data.get("phone","")}, timeout=15)
+                if r.status_code == 200:
+                    recent_orders = r.json().get("data", [])
+            except Exception as e:
+                log.error(f"Duplicate check failed: {e}")
 
-for order in recent_orders:
-    try:
-        order_date = datetime.strptime(order.get("created_at",""), "%Y-%m-%d %H:%M:%S")
-        if order.get("billing_phone") == data.get("phone") and (datetime.now()-order_date).days < 7:
-            # Ask user confirmation before creating duplicate shipment
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅ Yes", callback_data=f"dup_yes_{json.dumps(payload)}"),
-                    InlineKeyboardButton("❌ No", callback_data="dup_no")
-                ]
-            ]
-            await update.message.reply_text(
-                f"⚠️ Duplicate order detected for {data.get('name')} within 7 days.\nDo you still want to create?",
-                reply_markup=InlineKeyboardMarkup(keyboard)
+            for order in recent_orders:
+                try:
+                    order_date = datetime.strptime(order.get("created_at",""), "%Y-%m-%d %H:%M:%S")
+                    if order.get("billing_phone") == data.get("phone") and (datetime.now()-order_date).days < 7:
+                        # Ask user confirmation before creating duplicate shipment
+                        keyboard = [
+                            [
+                                InlineKeyboardButton("✅ Yes", callback_data=f"dup_yes_{json.dumps(payload)}"),
+                                InlineKeyboardButton("❌ No", callback_data="dup_no")
+                            ]
+                        ]
+                        await update.message.reply_text(
+                            f"⚠️ Duplicate order detected for {data.get('name')} within 7 days.\nDo you still want to create?",
+                            reply_markup=InlineKeyboardMarkup(keyboard)
+                        )
+                        return
+                except Exception:
+                    pass
+
+            # --- Create order normally ---
+            resp, err = create_order(payload)
+            if not resp:
+                if "insufficient balance" in str(err).lower():
+                    await update.message.reply_text("❌ Insufficient wallet balance in Shiprocket. Please recharge.", reply_markup=MAIN_KEYBOARD)
+                else:
+                    await update.message.reply_text(f"❌ Error creating shipment: {err}", reply_markup=MAIN_KEYBOARD)
+                return
+
+            shipment_id = resp.get("shipment_id")
+
+            courier, awb, rate = create_shipment_with_fallback(
+                shipment_id,
+                pickup_obj.get("pin_code","110001"),
+                data.get("pincode","110001"),
+                product_data.get("weight"),
+                sr_payment_method=="COD"
             )
-            return
-    except Exception:
-        pass
 
-# --- Create order normally ---
-resp, err = create_order(payload)
-if not resp:
-    if "insufficient balance" in str(err).lower():
-        await update.message.reply_text("❌ Insufficient wallet balance in Shiprocket. Please recharge.", reply_markup=MAIN_KEYBOARD)
-    else:
-        await update.message.reply_text(f"❌ Error creating shipment: {err}", reply_markup=MAIN_KEYBOARD)
-    return
+            if not courier or not awb:
+                await update.message.reply_text("❌ No couriers available for this shipment", reply_markup=MAIN_KEYBOARD)
+                return
 
-shipment_id = resp.get("shipment_id")
+            shipment_awb_map[shipment_id] = awb
 
-courier, awb, rate = create_shipment_with_fallback(
-    shipment_id,
-    pickup_obj.get("pin_code","110001"),
-    data.get("pincode","110001"),
-    product_data.get("weight"),
-    sr_payment_method=="COD"
-)
+            label_url = generate_label(shipment_id)
+            tracking_link = f"https://shiprocket.co/tracking/{awb}" if awb else "N/A"
 
-if not courier or not awb:
-    await update.message.reply_text("❌ No couriers available for this shipment", reply_markup=MAIN_KEYBOARD)
-    return
+            # --- Increment order counter ---
+            count_file = "order_count.json"
+            count_data = {"count": 0}
+            if os.path.exists(count_file):
+                try:
+                    count_data = json.load(open(count_file))
+                except:
+                    pass
+            count_data["count"] = count_data.get("count",0) + 1
+            json.dump(count_data, open(count_file,"w"), indent=2)
+            order_number = count_data["count"]
 
-shipment_awb_map[shipment_id] = awb
+            await update.message.reply_text(
+                f"✅ Shipment Created!\nOrder No: {order_number}\nCourier: {courier.get('courier_name')}\nRate: {rate}\nAWB: {awb}\nTracking: {tracking_link}",
+                reply_markup=MAIN_KEYBOARD
+            )
 
-label_url = generate_label(shipment_id)
-tracking_link = f"https://shiprocket.co/tracking/{awb}" if awb else "N/A"
+            if label_url:
+                async with aiohttp.ClientSession() as session_http:
+                    async with session_http.get(label_url) as resp_pdf:
+                        if resp_pdf.status == 200:
+                            data_pdf = await resp_pdf.read()
+                            await update.message.reply_document(document=data_pdf, filename=f"{awb}.pdf")
 
-# --- Increment order counter ---
-count_file = "order_count.json"
-count_data = {"count": 0}
-if os.path.exists(count_file):
-    try:
-        count_data = json.load(open(count_file))
-    except:
-        pass
-count_data["count"] = count_data.get("count",0) + 1
-json.dump(count_data, open(count_file,"w"), indent=2)
-order_number = count_data["count"]
-
-await update.message.reply_text(
-    f"✅ Shipment Created!\nOrder No: {order_number}\nCourier: {courier.get('courier_name')}\nRate: {rate}\nAWB: {awb}\nTracking: {tracking_link}",
-    reply_markup=MAIN_KEYBOARD
-)
-
-if label_url:
-    async with aiohttp.ClientSession() as session:
-        async with session.get(label_url) as resp_pdf:
-            if resp_pdf.status == 200:
-                data_pdf = await resp_pdf.read()
-                await update.message.reply_document(document=data_pdf, filename=f"{awb}.pdf")
-
-            # --- Ask about pickup with inline buttons (only after shipment created) ---
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅ Yes", callback_data=f"schedule_yes_{shipment_id}"),
-                    InlineKeyboardButton("❌ No", callback_data=f"schedule_no_{shipment_id}")
+                # --- Ask about pickup with inline buttons (only after shipment created) ---
+                keyboard = [
+                    [
+                        InlineKeyboardButton("✅ Yes", callback_data=f"schedule_yes_{shipment_id}"),
+                        InlineKeyboardButton("❌ No", callback_data=f"schedule_no_{shipment_id}")
+                    ]
                 ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text("Do you want to schedule pickup?", reply_markup=reply_markup)
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await update.message.reply_text("Do you want to schedule pickup?", reply_markup=reply_markup)
 
         except Exception as e:
             await update.message.reply_text(f"⚠️ Error: {e}", reply_markup=MAIN_KEYBOARD)
@@ -629,70 +629,72 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text("❌ Product not found.")
         return
+
     # --- Duplicate order confirmation ---
-if data.startswith("dup_yes_"):
-    try:
-        payload = json.loads(data.split("dup_yes_", 1)[1])
-        # Call create_order again with saved payload
-        resp, err = create_order(payload)
-        if not resp:
-            await query.message.reply_text(f"❌ Error creating shipment: {err}", reply_markup=MAIN_KEYBOARD)
-            return
+    if data.startswith("dup_yes_"):
+        try:
+            payload = json.loads(data.split("dup_yes_", 1)[1])
+            # Call create_order again with saved payload
+            resp, err = create_order(payload)
+            if not resp:
+                await query.message.reply_text(f"❌ Error creating shipment: {err}", reply_markup=MAIN_KEYBOARD)
+                return
 
-        shipment_id = resp.get("shipment_id")
-        courier, awb, rate = create_shipment_with_fallback(
-            shipment_id,
-            payload.get("pickup_postcode","110001"),
-            payload.get("pincode","110001"),
-            payload.get("weight","0.5"),
-            payload.get("payment_method")=="COD"
-        )
-        if not courier or not awb:
-            await query.message.reply_text("❌ No couriers available for this shipment", reply_markup=MAIN_KEYBOARD)
-            return
+            shipment_id = resp.get("shipment_id")
+            courier, awb, rate = create_shipment_with_fallback(
+                shipment_id,
+                payload.get("pickup_postcode","110001"),
+                payload.get("pincode","110001"),
+                payload.get("weight","0.5"),
+                payload.get("payment_method")=="COD"
+            )
+            if not courier or not awb:
+                await query.message.reply_text("❌ No couriers available for this shipment", reply_markup=MAIN_KEYBOARD)
+                return
 
-        tracking_link = f"https://shiprocket.co/tracking/{awb}"
+            tracking_link = f"https://shiprocket.co/tracking/{awb}"
 
-        # --- Increment order counter ---
-        count_file = "order_count.json"
-        count_data = {"count": 0}
-        if os.path.exists(count_file):
-            try:
-                count_data = json.load(open(count_file))
-            except:
-                pass
-        count_data["count"] = count_data.get("count",0) + 1
-        json.dump(count_data, open(count_file,"w"), indent=2)
-        order_number = count_data["count"]
+            # --- Increment order counter ---
+            count_file = "order_count.json"
+            count_data = {"count": 0}
+            if os.path.exists(count_file):
+                try:
+                    count_data = json.load(open(count_file))
+                except:
+                    pass
+            count_data["count"] = count_data.get("count",0) + 1
+            json.dump(count_data, open(count_file,"w"), indent=2)
+            order_number = count_data["count"]
 
-        await query.message.reply_text(
-            f"✅ Shipment Created!\nOrder No: {order_number}\nCourier: {courier.get('courier_name')}\nRate: {rate}\nAWB: {awb}\nTracking: {tracking_link}",
-            reply_markup=MAIN_KEYBOARD
-        )
+            await query.message.reply_text(
+                f"✅ Shipment Created!\nOrder No: {order_number}\nCourier: {courier.get('courier_name')}\nRate: {rate}\nAWB: {awb}\nTracking: {tracking_link}",
+                reply_markup=MAIN_KEYBOARD
+            )
 
-    except Exception as e:
-        await query.message.reply_text(f"❌ Error confirming duplicate order: {e}", reply_markup=MAIN_KEYBOARD)
-    return
+        except Exception as e:
+            await query.message.reply_text(f"❌ Error confirming duplicate order: {e}", reply_markup=MAIN_KEYBOARD)
+        return
 
-if data == "dup_no":
-    await query.message.reply_text("✅ Duplicate order cancelled.", reply_markup=MAIN_KEYBOARD)
-    return
+    if data == "dup_no":
+        await query.message.reply_text("✅ Duplicate order cancelled.", reply_markup=MAIN_KEYBOARD)
+        return
 
-# --- Schedule pickup ---
-if data.startswith("schedule_yes_"):
-    shipment_id = data.replace("schedule_yes_", "")
-    ids = [shipment_id]  # keep as string UUID
-    ok, msg = schedule_pickup(ids)
-    await query.edit_message_text(("✅ " if ok else "❌ ") + msg)
-    return
+    # --- Schedule pickup ---
+    if data.startswith("schedule_yes_"):
+        shipment_id = data.replace("schedule_yes_", "")
+        ids = [shipment_id]  # keep as string UUID
+        ok, msg = schedule_pickup(ids)
+        await query.edit_message_text(("✅ " if ok else "❌ ") + msg)
+        return
 
-if data.startswith("schedule_no_"):
-    shipment_id = data.replace("schedule_no_", "")
-    await query.edit_message_text(f"❌ Shipment {shipment_id} not scheduled")
-    return
+    if data.startswith("schedule_no_"):
+        shipment_id = data.replace("schedule_no_", "")
+        await query.edit_message_text(f"❌ Shipment {shipment_id} not scheduled")
+        return
 
     # fallback
     await query.edit_message_text("⚠️ Unknown action")
+
 # ---------------- MAIN ----------------
 async def main():
     log.info("Bot starting...")
