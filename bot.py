@@ -485,9 +485,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "height": float(product_data.get("height")),
                 "weight": float(product_data.get("weight")),
             }
-          # ✅ Add this safely inside the same indentation
-             if CUSTOM_CHANNEL_ID:
-        payload["channel_id"] = CUSTOM_CHANNEL_ID
+# ✅ Add this safely inside the same indentation
+if CUSTOM_CHANNEL_ID:
+    payload["channel_id"] = CUSTOM_CHANNEL_ID
 
 # --- Duplicate order check (Shiprocket API) ---
 recent_orders = []
@@ -677,18 +677,19 @@ if data.startswith("dup_yes_"):
 if data == "dup_no":
     await query.message.reply_text("✅ Duplicate order cancelled.", reply_markup=MAIN_KEYBOARD)
     return
-    # --- Schedule pickup ---
-    if data.startswith("schedule_yes_"):
-        shipment_id = data.replace("schedule_yes_", "")
-        ids = [shipment_id]  # keep as string UUID
-        ok, msg = schedule_pickup(ids)
-        await query.edit_message_text(("✅ " if ok else "❌ ") + msg)
-        return
 
-    if data.startswith("schedule_no_"):
-        shipment_id = data.replace("schedule_no_", "")
-        await query.edit_message_text(f"❌ Shipment {shipment_id} not scheduled")
-        return
+# --- Schedule pickup ---
+if data.startswith("schedule_yes_"):
+    shipment_id = data.replace("schedule_yes_", "")
+    ids = [shipment_id]  # keep as string UUID
+    ok, msg = schedule_pickup(ids)
+    await query.edit_message_text(("✅ " if ok else "❌ ") + msg)
+    return
+
+if data.startswith("schedule_no_"):
+    shipment_id = data.replace("schedule_no_", "")
+    await query.edit_message_text(f"❌ Shipment {shipment_id} not scheduled")
+    return
 
     # fallback
     await query.edit_message_text("⚠️ Unknown action")
