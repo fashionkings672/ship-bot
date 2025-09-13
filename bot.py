@@ -77,20 +77,31 @@ def normalize_pickup_obj(parsed):
     return next(iter(pickup_map.values()), None)
 
 # ---------------- SHIPROCKET LOGIN / PICKUP ----------------
-def shiprocket_login():
-    try:
-        r = session.post(SHIPROCKET_BASE + URLS["login"], json={
-            "email": SHIPROCKET_EMAIL,
-            "password": SHIPROCKET_PASSWORD
-        }, timeout=20)
-        if r.status_code == 200 and r.json().get("token"):
-            token = r.json()["token"]
-            session.headers.update({"Authorization": f"Bearer {token}"})
-            return True, "✅ Logged into Shiprocket"
-        return False, f"❌ Login failed: {r.text}"
-    except Exception as e:
-        return False, f"❌ Login error: {e}"
+auth_token = None
+token_expiry = 0  # epoch time
 
+def get_token():
+    global auth_token, token_expiry
+
+    # ✅ Still valid?
+    if auth_token and time.time() < token_expiry:
+        return auth_token
+
+    # ✅ Otherwise login again
+    r = session.post(
+        SHIPROCKET_BASE + URLS["login"],
+        json={"email": SHIPROCKET_EMAIL, "password": SHIPROCKET_PASSWORD},
+        timeout=20
+    )
+    if r.status_code != 200:
+        raise Exception(f"Shiprocket login failed: {r.text}")
+
+    data = r.json()
+    auth_token = data.get("token")
+    token_expiry = time.time() + (23 * 3600)  # refresh before 24h
+    session.headers.update({"Authorization": f"Bearer {auth_token}"})
+    return auth_token
+    
 def refresh_pickups():
     global pickup_map
     try:
@@ -197,6 +208,7 @@ def generate_label(shipment_id):
 
 def create_order(payload):
     try:
+        get_token()  # ✅ ensure valid token
         r = session.post(SHIPROCKET_BASE + URLS["create_order"], json=payload, timeout=20)
         resp_json = r.json() if r else None
         if r.status_code!=200 or (resp_json and resp_json.get("status_code") not in (1,200)):
@@ -591,9 +603,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------- MAIN ----------------
 async def main():
     log.info("Bot starting...")
-    ok,msg = shiprocket_login()
-    log.info(msg)
-    if not ok: return
+
+    # ✅ Ensure token valid before first use
+    try:
+        get_token()
+        log.info("✅ Shiprocket token fetched")
+    except Exception as e:
+        log.error(f"❌ Shiprocket login failed: {e}")
+        return
+
     ok,msg = refresh_pickups()
     log.info(msg)
 
