@@ -19,12 +19,7 @@ import aiohttp
 # --- STEP 1: GLOBAL USER STATE ---
 user_state = {}
 
-# ---------------- CONFIG ----------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-SHIPROCKET_EMAIL = os.getenv("SHIPROCKET_EMAIL")
-SHIPROCKET_PASSWORD = os.getenv("SHIPROCKET_PASSWORD")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-openai.api_key = OPENAI_API_KEY
+
 
 CUSTOM_CHANNEL_ID = None
 if os.path.exists("custom_channel.json"):
