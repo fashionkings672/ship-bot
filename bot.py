@@ -20,7 +20,7 @@ import aiohttp
 user_state = {}
 
 # ---------------- CONFIG ----------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("")
 SHIPROCKET_EMAIL = os.getenv("SHIPROCKET_EMAIL")
 SHIPROCKET_PASSWORD = os.getenv("SHIPROCKET_PASSWORD")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
