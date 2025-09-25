@@ -35,7 +35,7 @@ if os.path.exists("custom_channel.json"):
 
 SHIPROCKET_BASE = "https://apiv2.shiprocket.in/v1/external"
 URLS = {
-    "": "/auth/login",
+    "login": "/auth/login",
     "pickup": "/settings/company/pickup",
     "create_order": "/orders/create/adhoc",
     "courier_get": "/courier/serviceability/",
