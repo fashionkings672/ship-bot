@@ -79,27 +79,45 @@ def normalize_pickup_obj(parsed):
 auth_token = None
 token_expiry = 0  # epoch time
 
-def get_token():
+def get_token(force_refresh=False):
+    """
+    Get or refresh Shiprocket token safely.
+    Automatically retries if expired or invalid.
+    """
     global auth_token, token_expiry
 
     # ✅ Still valid?
-    if auth_token and time.time() < token_expiry:
+    if not force_refresh and auth_token and time.time() < token_expiry:
         return auth_token
 
-    # ✅ Otherwise login again
-    r = session.post(
-        SHIPROCKET_BASE + URLS["login"],
-        json={"email": SHIPROCKET_EMAIL, "password": SHIPROCKET_PASSWORD},
-        timeout=20
-    )
-    if r.status_code != 200:
-        raise Exception(f"Shiprocket login failed: {r.text}")
+    # 🔁 Otherwise, re-login
+    try:
+        r = session.post(
+            SHIPROCKET_BASE + URLS["login"],
+            json={"email": SHIPROCKET_EMAIL, "password": SHIPROCKET_PASSWORD},
+            timeout=20
+        )
+        data = r.json() if r else {}
+        if "token" not in data:
+            raise Exception(data)
+        auth_token = data["token"]
+        token_expiry = time.time() + (23 * 3600)
+        session.headers.update({"Authorization": f"Bearer {auth_token}"})
+        return auth_token
+    except Exception as e:
+        raise Exception(f"Shiprocket login failed: {e}")
 
-    data = r.json()
-    auth_token = data.get("token")
-    token_expiry = time.time() + (23 * 3600)  # refresh before 24h
-    session.headers.update({"Authorization": f"Bearer {auth_token}"})
-    return auth_token
+
+def ensure_valid_token():
+    """Ensures token is valid, retries once if invalid."""
+    global auth_token
+    try:
+        get_token()
+    except Exception as e:
+        if "invalid token" in str(e).lower():
+            get_token(force_refresh=True)
+        else:
+            raise
     
 def refresh_pickups():
     global pickup_map
@@ -208,7 +226,7 @@ def generate_label(shipment_id):
 
 def create_order(payload):
     try:
-        get_token()  # ✅ ensure valid token
+        ensure_valid_token()  # ✅ handles refresh & retry
         r = session.post(SHIPROCKET_BASE + URLS["create_order"], json=payload, timeout=20)
         resp_json = r.json() if r else None
         if r.status_code!=200 or (resp_json and resp_json.get("status_code") not in (1,200)):
