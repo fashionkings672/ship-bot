@@ -410,50 +410,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
       # --- Download Delivered Orders ---
     if text == "📥 Download Delivered Orders":
-        await update.message.reply_text("⏳ Fetching delivered orders (1 year)...")
+    await update.message.reply_text("⏳ Fetching delivered orders for last 1 year...")
 
     try:
         ensure_valid_token()
-
         from datetime import datetime, timedelta
-
-        # ---- 1 YEAR RANGE ----
-        date_to = datetime.today().strftime("%Y-%m-%d")
-        date_from = (datetime.today() - timedelta(days=365)).strftime("%Y-%m-%d")
+        import csv
 
         all_orders = []
-        page = 1
+        today = datetime.today()
 
-        while True:
-            r = session.get(
-                f"{SHIPROCKET_BASE}/orders",
-                params={
-                    "status": 6,          # Delivered
-                    "per_page": 100,
-                    "page": page,
-                    "date_from": date_from,
-                    "date_to": date_to
-                },
-                timeout=20
-            )
+        # --- Loop month by month (12 months) ---
+        for i in range(12):
+            end_date = (today - timedelta(days=30 * i)).strftime("%Y-%m-%d")
+            start_date = (today - timedelta(days=30 * (i + 1))).strftime("%Y-%m-%d")
 
-            data = r.json().get("data", [])
+            page = 1
+            while True:
+                r = session.get(
+                    f"{SHIPROCKET_BASE}/orders",
+                    params={
+                        "status": 6,            # Delivered
+                        "per_page": 100,
+                        "page": page,
+                        "date_from": start_date,
+                        "date_to": end_date
+                    },
+                    timeout=20
+                )
 
-            # if no more data → stop
-            if not data:
-                break
+                data = r.json().get("data", [])
 
-            all_orders.extend(data)
-            page += 1
+                if not data:
+                    break  # No more pages, stop
+
+                all_orders.extend(data)
+                page += 1
 
         if not all_orders:
-            await update.message.reply_text("⚠️ No delivered orders found in last 1 year.")
+            await update.message.reply_text("⚠️ No delivered orders found for last 1 year.")
             return
 
-        # Write CSV
-        import csv
-        filename = "delivered_orders_1year.csv"
-
+        filename = "delivered_orders.csv"
         with open(filename, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow([
@@ -461,7 +459,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "City", "State", "Pincode", "Payment Mode",
                 "COD Amount", "Order Date", "Delivered Date"
             ])
-
             for order in all_orders:
                 writer.writerow([
                     order.get("order_id"),
