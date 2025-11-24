@@ -410,7 +410,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     # --- Download Delivered Orders ---
     if text == "📥 Download Delivered Orders":
-       await update.message.reply_text("⏳ Fetching delivered orders...")
+       await update.message.reply_text("⏳ Fetching delivered orders (1 year)...")
 
     try:
         ensure_valid_token()
@@ -421,22 +421,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         date_to = datetime.today().strftime("%Y-%m-%d")
         date_from = (datetime.today() - timedelta(days=365)).strftime("%Y-%m-%d")
 
-        # Shiprocket Delivered orders = status = 6
-        r = session.get(
-            f"{SHIPROCKET_BASE}/orders",
-            params={
-                "status": 6,              # Delivered
-                "per_page": 500,
-                "date_from": date_from,   # 1 year back
-                "date_to": date_to
-            },
-            timeout=20
-        )
+        all_orders = []
+        page = 1
 
-        data = r.json().get("data", [])
+        while True:
+            r = session.get(
+                f"{SHIPROCKET_BASE}/orders",
+                params={
+                    "status": 6,              # Delivered
+                    "per_page": 100,
+                    "page": page,             # << -- IMPORTANT
+                    "date_from": date_from,
+                    "date_to": date_to
+                },
+                timeout=20
+            )
 
-        if not data:
-            await update.message.reply_text("⚠️ No delivered orders found.")
+            data = r.json().get("data", [])
+
+            if not data:   # No more pages → stop
+                break
+
+            all_orders.extend(data)
+            page += 1
+
+        if not all_orders:
+            await update.message.reply_text("⚠️ No delivered orders found for last 1 year.")
             return
 
         import csv
@@ -449,7 +459,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "City", "State", "Pincode", "Payment Mode",
                 "COD Amount", "Order Date", "Delivered Date"
             ])
-            for order in data:
+            for order in all_orders:
+                writer.writerow([
+                    order.get("order_id"),
+                    order.get("awb"),
+                    order.get("billing_customer_name"),
+                    order.get("billing_phone"),
+                    order.get("billing_city"),
+                    order.get("billing_state"),
+                    order.get("billing_pincode"),
+                    order.get("payment_method"),
+                    order.get("cod_amount"),
+                    order.get("created_at"),
+                    order.get("delivered_date")
+                ])
+
+        await update.message.reply_document(open(filename, "rb"))
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+    return
+        import csv
+        filename = "delivered_orders.csv"
+
+        with open(filename, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "Order ID", "AWB", "Customer Name", "Phone",
+                "City", "State", "Pincode", "Payment Mode",
+                "COD Amount", "Order Date", "Delivered Date"
+            ])
+            for order in all_orders:
                 writer.writerow([
                     order.get("order_id"),
                     order.get("awb"),
