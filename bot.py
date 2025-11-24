@@ -408,10 +408,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_product"] = False
         await update.message.reply_text("Send messy address/order to create shipment.", reply_markup=MAIN_KEYBOARD)
         return
-
     # --- Download Delivered Orders ---
     if text == "📥 Download Delivered Orders":
-    await update.message.reply_text("⏳ Fetching delivered orders...")
+       await update.message.reply_text("⏳ Fetching delivered orders...")
 
     try:
         ensure_valid_token()
@@ -471,30 +470,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {e}")
 
     return
-    # --- 2) Add product (user typed product details) ---
-    if context.user_data.get("awaiting_product"):
-        parts = text.strip().split()
-        if len(parts) < 5:
-            await update.message.reply_text("❌ Invalid format. Send: ProductName length breadth height weight", reply_markup=MAIN_KEYBOARD)
-            return
-        try:
-            length = float(parts[-4])
-            breadth = float(parts[-3])
-            height = float(parts[-2])
-            weight = float(parts[-1])
-        except ValueError:
-            await update.message.reply_text("❌ Dimensions and weight must be numbers.", reply_markup=MAIN_KEYBOARD)
-            return
-        product_name = " ".join(parts[:-4])
-        products = {}
-        if os.path.exists(PRODUCTS_FILE):
-            products = json.load(open(PRODUCTS_FILE))
-        products[product_name] = {"length": length,"breadth": breadth,"height": height,"weight": weight}
-        json.dump(products, open(PRODUCTS_FILE,"w"), indent=2)
-        context.user_data["awaiting_product"]=False
-        await update.message.reply_text(f"✅ Product '{product_name}' saved successfully", reply_markup=MAIN_KEYBOARD)
-        return
-
     # --- 3) Create shipment (user typed messy address/order) ---
     if context.user_data.get("awaiting_shipment"):
         try:
