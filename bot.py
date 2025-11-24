@@ -409,14 +409,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Send messy address/order to create shipment.", reply_markup=MAIN_KEYBOARD)
         return
 
-    if text == "🔙 Cancel":
-        context.user_data.pop("awaiting_product", None)
-        context.user_data.pop("awaiting_shipment", None)
-        context.user_data.pop("editing_product", None)
-        await update.message.reply_text("✅ Cancelled. Back to main menu.", reply_markup=MAIN_KEYBOARD)
-        return
-        # --- Download Delivered Orders ---
-if text == "📥 Download Delivered Orders":
+    # --- Download Delivered Orders ---
+    if text == "📥 Download Delivered Orders":
     await update.message.reply_text("⏳ Fetching delivered orders...")
 
     try:
@@ -477,7 +471,6 @@ if text == "📥 Download Delivered Orders":
         await update.message.reply_text(f"❌ Error: {e}")
 
     return
-
     # --- 2) Add product (user typed product details) ---
     if context.user_data.get("awaiting_product"):
         parts = text.strip().split()
