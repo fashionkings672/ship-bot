@@ -409,11 +409,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Send messy address/order to create shipment.", reply_markup=MAIN_KEYBOARD)
         return
       # --- Download Delivered Orders ---
-     if text == "📥 Download Delivered Orders":
-    await update.message.reply_text("⏳ Fetching delivered orders (1 year)...")
+    if text == "📥 Download Delivered Orders":
+       await update.message.reply_text("⏳ Fetching delivered orders (1 year)...")
 
     try:
         ensure_valid_token()
+
         from datetime import datetime, timedelta
 
         # ---- 1 Year Date Range ----
@@ -424,71 +425,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = 1
 
         while True:
-            try:
-                r = session.get(
-                    f"{SHIPROCKET_BASE}/orders",
-                    params={
-                        "status": 6,                # Delivered
-                        "per_page": 100,
-                        "page": page,               # Pagination
-                        "date_from": date_from,
-                        "date_to": date_to
-                    },
-                    timeout=20
-                )
-                r.raise_for_status()  # Raise if there is an HTTP error
-                data = r.json().get("data", [])
-                
-                if not data:  # No more pages → stop
-                    break
+            r = session.get(
+                f"{SHIPROCKET_BASE}/orders",
+                params={
+                    "status": 6,               # Delivered
+                    "per_page": 100,
+                    "page": page,              # pagination
+                    "date_from": date_from,
+                    "date_to": date_to
+                },
+                timeout=20
+            )
 
-                all_orders.extend(data)
-                page += 1
-            except requests.exceptions.RequestException as req_err:
-                await update.message.reply_text(f"❌ API Request Error: {req_err}")
-                return
-            except Exception as err:
-                await update.message.reply_text(f"⚠️ Unexpected error: {err}")
-                return
+            data = r.json().get("data", [])
+
+            if not data:      # no more pages → stop
+                break
+
+            all_orders.extend(data)
+            page += 1
 
         if not all_orders:
             await update.message.reply_text("⚠️ No delivered orders found for last 1 year.")
             return
 
-        import csv
-        filename = "delivered_orders.csv"
-
-        with open(filename, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "Order ID", "AWB", "Customer Name", "Phone",
-                "City", "State", "Pincode", "Payment Mode",
-                "COD Amount", "Order Date", "Delivered Date"
-            ])
-            for order in all_orders:
-                writer.writerow([
-                    order.get("order_id"),
-                    order.get("awb"),
-                    order.get("billing_customer_name"),
-                    order.get("billing_phone"),
-                    order.get("billing_city"),
-                    order.get("billing_state"),
-                    order.get("billing_pincode"),
-                    order.get("payment_method"),
-                    order.get("cod_amount"),
-                    order.get("created_at"),
-                    order.get("delivered_date")
-                ])
-
-        # Properly handle file closing and update reply
-        with open(filename, "rb") as doc:
-            await update.message.reply_document(doc)
-
-    except Exception as e:
-        # Improved error feedback
-        logging.error(f"Error fetching or saving delivered orders: {str(e)}")
-        await update.message.reply_text(f"❌ Error: {e}")
-      
         import csv
         filename = "delivered_orders.csv"
 
@@ -520,6 +480,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {e}")
 
     return
+
     # --- 3) Create shipment (user typed messy address/order) ---
     if context.user_data.get("awaiting_shipment"):
         try:
