@@ -410,14 +410,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
       # --- Download Delivered Orders ---
     if text == "📥 Download Delivered Orders":
-       await update.message.reply_text("⏳ Fetching delivered orders (1 year)...")
+        await update.message.reply_text("⏳ Fetching delivered orders (1 year)...")
 
     try:
         ensure_valid_token()
 
         from datetime import datetime, timedelta
 
-        # ---- 1 Year Date Range ----
+        # ---- 1 YEAR RANGE ----
         date_to = datetime.today().strftime("%Y-%m-%d")
         date_from = (datetime.today() - timedelta(days=365)).strftime("%Y-%m-%d")
 
@@ -428,9 +428,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             r = session.get(
                 f"{SHIPROCKET_BASE}/orders",
                 params={
-                    "status": 6,               # Delivered
+                    "status": 6,          # Delivered
                     "per_page": 100,
-                    "page": page,              # pagination
+                    "page": page,
                     "date_from": date_from,
                     "date_to": date_to
                 },
@@ -439,18 +439,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             data = r.json().get("data", [])
 
-            if not data:      # no more pages → stop
+            # if no more data → stop
+            if not data:
                 break
 
             all_orders.extend(data)
             page += 1
 
         if not all_orders:
-            await update.message.reply_text("⚠️ No delivered orders found for last 1 year.")
+            await update.message.reply_text("⚠️ No delivered orders found in last 1 year.")
             return
 
+        # Write CSV
         import csv
-        filename = "delivered_orders.csv"
+        filename = "delivered_orders_1year.csv"
 
         with open(filename, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
@@ -459,6 +461,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "City", "State", "Pincode", "Payment Mode",
                 "COD Amount", "Order Date", "Delivered Date"
             ])
+
             for order in all_orders:
                 writer.writerow([
                     order.get("order_id"),
