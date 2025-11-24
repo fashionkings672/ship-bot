@@ -409,7 +409,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Send messy address/order to create shipment.", reply_markup=MAIN_KEYBOARD)
         return
       # --- Download Delivered Orders ---
-   if text == "📥 Download Delivered Orders":
+     if text == "📥 Download Delivered Orders":
         await update.message.reply_text("⏳ Fetching delivered orders (1 year)...")
 
     try:
@@ -448,6 +448,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not all_orders:
             await update.message.reply_text("⚠️ No delivered orders found for last 1 year.")
             return
+
+        import csv
+        filename = "delivered_orders.csv"
+
+        with open(filename, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "Order ID", "AWB", "Customer Name", "Phone",
+                "City", "State", "Pincode", "Payment Mode",
+                "COD Amount", "Order Date", "Delivered Date"
+            ])
+            for order in all_orders:
+                writer.writerow([
+                    order.get("order_id"),
+                    order.get("awb"),
+                    order.get("billing_customer_name"),
+                    order.get("billing_phone"),
+                    order.get("billing_city"),
+                    order.get("billing_state"),
+                    order.get("billing_pincode"),
+                    order.get("payment_method"),
+                    order.get("cod_amount"),
+                    order.get("created_at"),
+                    order.get("delivered_date")
+                ])
+
+        await update.message.reply_document(open(filename, "rb"))
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+    return
+
 
         import csv
         filename = "delivered_orders.csv"
