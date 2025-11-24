@@ -415,56 +415,68 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("editing_product", None)
         await update.message.reply_text("✅ Cancelled. Back to main menu.", reply_markup=MAIN_KEYBOARD)
         return
-            # --- Download Delivered Orders ---
-    if text == "📥 Download Delivered Orders":
-        await update.message.reply_text("⏳ Fetching delivered orders...")
+        # --- Download Delivered Orders ---
+if text == "📥 Download Delivered Orders":
+    await update.message.reply_text("⏳ Fetching delivered orders...")
 
-        try:
-            ensure_valid_token()
+    try:
+        ensure_valid_token()
 
-            # Shiprocket Delivered orders = status = 6
-            r = session.get(
-                f"{SHIPROCKET_BASE}/orders",
-                params={"status": 6, "per_page": 500},
-                timeout=20
-            )
-            data = r.json().get("data", [])
+        from datetime import datetime, timedelta
 
-            if not data:
-                await update.message.reply_text("⚠️ No delivered orders found.")
-                return
+        # ---- 1 Year Date Range ----
+        date_to = datetime.today().strftime("%Y-%m-%d")
+        date_from = (datetime.today() - timedelta(days=365)).strftime("%Y-%m-%d")
 
-            import csv
-            filename = "delivered_orders.csv"
+        # Shiprocket Delivered orders = status = 6
+        r = session.get(
+            f"{SHIPROCKET_BASE}/orders",
+            params={
+                "status": 6,              # Delivered
+                "per_page": 500,
+                "date_from": date_from,   # 1 year back
+                "date_to": date_to
+            },
+            timeout=20
+        )
 
-            with open(filename, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
+        data = r.json().get("data", [])
+
+        if not data:
+            await update.message.reply_text("⚠️ No delivered orders found.")
+            return
+
+        import csv
+        filename = "delivered_orders.csv"
+
+        with open(filename, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "Order ID", "AWB", "Customer Name", "Phone",
+                "City", "State", "Pincode", "Payment Mode",
+                "COD Amount", "Order Date", "Delivered Date"
+            ])
+            for order in data:
                 writer.writerow([
-                    "Order ID", "AWB", "Customer Name", "Phone",
-                    "City", "State", "Pincode", "Payment Mode",
-                    "COD Amount", "Order Date", "Delivered Date"
+                    order.get("order_id"),
+                    order.get("awb"),
+                    order.get("billing_customer_name"),
+                    order.get("billing_phone"),
+                    order.get("billing_city"),
+                    order.get("billing_state"),
+                    order.get("billing_pincode"),
+                    order.get("payment_method"),
+                    order.get("cod_amount"),
+                    order.get("created_at"),
+                    order.get("delivered_date")
                 ])
-                for order in data:
-                    writer.writerow([
-                        order.get("order_id"),
-                        order.get("awb"),
-                        order.get("billing_customer_name"),
-                        order.get("billing_phone"),
-                        order.get("billing_city"),
-                        order.get("billing_state"),
-                        order.get("billing_pincode"),
-                        order.get("payment_method"),
-                        order.get("cod_amount"),
-                        order.get("created_at"),
-                        order.get("delivered_date")
-                    ])
 
-            await update.message.reply_document(open(filename, "rb"))
+        await update.message.reply_document(open(filename, "rb"))
 
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
 
-        return
+    return
 
     # --- 2) Add product (user typed product details) ---
     if context.user_data.get("awaiting_product"):
