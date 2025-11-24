@@ -410,48 +410,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
       # --- Download Delivered Orders ---
     if text == "📥 Download Delivered Orders":
-       await update.message.reply_text("⏳ Fetching delivered orders for last 1 year...")
+        await update.message.reply_text("⏳ Fetching delivered shipments (deduped)…")
 
     try:
         ensure_valid_token()
-        from datetime import datetime, timedelta
         import csv
 
-        all_orders = []
-        today = datetime.today()
+        unique = {}   # <-- STORE UNIQUE BY AWB
+        page = 1
 
-        # --- Loop month by month (12 months) ---
-        for i in range(12):
-            end_date = (today - timedelta(days=30 * i)).strftime("%Y-%m-%d")
-            start_date = (today - timedelta(days=30 * (i + 1))).strftime("%Y-%m-%d")
+        while True:
+            r = session.get(
+                f"{SHIPROCKET_BASE}/shipments",
+                params={
+                    "status": 6,
+                    "per_page": 100,
+                    "page": page
+                },
+                timeout=20
+            )
 
-            page = 1
-            while True:
-                r = session.get(
-                    f"{SHIPROCKET_BASE}/orders",
-                    params={
-                        "status": 6,            # Delivered
-                        "per_page": 100,
-                        "page": page,
-                        "date_from": start_date,
-                        "date_to": end_date
-                    },
-                    timeout=20
-                )
+            res = r.json()
+            data = res.get("data", [])
 
-                data = r.json().get("data", [])
+            if not data:
+                break
 
-                if not data:
-                    break  # No more pages, stop
+            for o in data:
+                awb = o.get("awb_code")
+                if awb and awb not in unique:
+                    unique[awb] = o     # ← prevents duplicates
 
-                all_orders.extend(data)
-                page += 1
+            page += 1
 
-        if not all_orders:
-            await update.message.reply_text("⚠️ No delivered orders found for last 1 year.")
+            # SAFETY: stop looping after 10 pages, Shiprocket repeats infinitely
+            if page > 10:
+                break
+
+        if not unique:
+            await update.message.reply_text("⚠️ No delivered shipments found.")
             return
 
         filename = "delivered_orders.csv"
+
         with open(filename, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow([
@@ -459,18 +460,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "City", "State", "Pincode", "Payment Mode",
                 "COD Amount", "Order Date", "Delivered Date"
             ])
-            for order in all_orders:
+
+            for order in unique.values():
                 writer.writerow([
                     order.get("order_id"),
-                    order.get("awb"),
-                    order.get("billing_customer_name"),
-                    order.get("billing_phone"),
-                    order.get("billing_city"),
-                    order.get("billing_state"),
-                    order.get("billing_pincode"),
+                    order.get("awb_code"),
+                    order.get("customer_name"),
+                    order.get("customer_phone"),
+                    order.get("customer_city"),
+                    order.get("customer_state"),
+                    order.get("customer_pincode"),
                     order.get("payment_method"),
                     order.get("cod_amount"),
-                    order.get("created_at"),
+                    order.get("order_date"),
                     order.get("delivered_date")
                 ])
 
