@@ -343,11 +343,11 @@ from telegram import ReplyKeyboardMarkup
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["➕ Add Product", "📋 View Products"],
-        ["📦 Create Shipment", "📥 Download Delivered Orders"],
-        ["🔙 Cancel"]
+        ["📦 Create Shipment", "🔙 Cancel"]
     ],
     resize_keyboard=True
 )
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()  # RESET ALL FLAGS
     await update.message.reply_text("👋 Welcome! Use the buttons below:", reply_markup=MAIN_KEYBOARD)
@@ -408,80 +408,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_product"] = False
         await update.message.reply_text("Send messy address/order to create shipment.", reply_markup=MAIN_KEYBOARD)
         return
-      # --- Download Delivered Orders ---
-    if text == "📥 Download Delivered Orders":
-        await update.message.reply_text("⏳ Fetching delivered shipments (deduped)…")
 
-    try:
-        ensure_valid_token()
-        import csv
+    if text == "🔙 Cancel":
+        context.user_data.pop("awaiting_product", None)
+        context.user_data.pop("awaiting_shipment", None)
+        context.user_data.pop("editing_product", None)
+        await update.message.reply_text("✅ Cancelled. Back to main menu.", reply_markup=MAIN_KEYBOARD)
+        return
 
-        unique = {}   # <-- STORE UNIQUE BY AWB
-        page = 1
-
-        while True:
-            r = session.get(
-                f"{SHIPROCKET_BASE}/shipments",
-                params={
-                    "status": 6,
-                    "per_page": 100,
-                    "page": page
-                },
-                timeout=20
-            )
-
-            res = r.json()
-            data = res.get("data", [])
-
-            if not data:
-                break
-
-            for o in data:
-                awb = o.get("awb_code")
-                if awb and awb not in unique:
-                    unique[awb] = o     # ← prevents duplicates
-
-            page += 1
-
-            # SAFETY: stop looping after 10 pages, Shiprocket repeats infinitely
-            if page > 10:
-                break
-
-        if not unique:
-            await update.message.reply_text("⚠️ No delivered shipments found.")
+    # --- 2) Add product (user typed product details) ---
+    if context.user_data.get("awaiting_product"):
+        parts = text.strip().split()
+        if len(parts) < 5:
+            await update.message.reply_text("❌ Invalid format. Send: ProductName length breadth height weight", reply_markup=MAIN_KEYBOARD)
             return
-
-        filename = "delivered_orders.csv"
-
-        with open(filename, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "Order ID", "AWB", "Customer Name", "Phone",
-                "City", "State", "Pincode", "Payment Mode",
-                "COD Amount", "Order Date", "Delivered Date"
-            ])
-
-            for order in unique.values():
-                writer.writerow([
-                    order.get("order_id"),
-                    order.get("awb_code"),
-                    order.get("customer_name"),
-                    order.get("customer_phone"),
-                    order.get("customer_city"),
-                    order.get("customer_state"),
-                    order.get("customer_pincode"),
-                    order.get("payment_method"),
-                    order.get("cod_amount"),
-                    order.get("order_date"),
-                    order.get("delivered_date")
-                ])
-
-        await update.message.reply_document(open(filename, "rb"))
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
-
-    return
+        try:
+            length = float(parts[-4])
+            breadth = float(parts[-3])
+            height = float(parts[-2])
+            weight = float(parts[-1])
+        except ValueError:
+            await update.message.reply_text("❌ Dimensions and weight must be numbers.", reply_markup=MAIN_KEYBOARD)
+            return
+        product_name = " ".join(parts[:-4])
+        products = {}
+        if os.path.exists(PRODUCTS_FILE):
+            products = json.load(open(PRODUCTS_FILE))
+        products[product_name] = {"length": length,"breadth": breadth,"height": height,"weight": weight}
+        json.dump(products, open(PRODUCTS_FILE,"w"), indent=2)
+        context.user_data["awaiting_product"]=False
+        await update.message.reply_text(f"✅ Product '{product_name}' saved successfully", reply_markup=MAIN_KEYBOARD)
+        return
 
     # --- 3) Create shipment (user typed messy address/order) ---
     if context.user_data.get("awaiting_shipment"):
