@@ -95,7 +95,7 @@ def get_token(force_refresh=False):
         r = session.post(
             SHIPROCKET_BASE + URLS["login"],
             json={"email": SHIPROCKET_EMAIL, "password": SHIPROCKET_PASSWORD},
-            timeout=20
+            timeout=60
         )
         data = r.json() if r else {}
         if "token" not in data:
@@ -107,22 +107,44 @@ def get_token(force_refresh=False):
     except Exception as e:
         raise Exception(f"Shiprocket login failed: {e}")
 
-
-def ensure_valid_token():
-    """Ensures token is valid, retries once if invalid."""
-    global auth_token
+def refresh_pickups():
+    global pickup_map
     try:
-        get_token()
+        ensure_valid_token()
+
+        r = session.get(
+            SHIPROCKET_BASE + URLS["pickup"],
+            timeout=60
+        )
+
+        if r.status_code != 200:
+            return False, f"❌ Pickup fetch failed: {r.status_code} {r.text}"
+
+        try:
+            data = r.json()
+        except Exception:
+            return False, f"❌ Invalid JSON response: {r.text}"
+
+        lst = data.get("data", {}).get("shipping_address", [])
+
+        pickup_map = {
+            p["pickup_location"].lower(): p
+            for p in lst
+            if p.get("pickup_location")
+        }
+
+        return True, f"✅ Loaded {len(pickup_map)} pickups"
+
+    except requests.exceptions.ConnectTimeout:
+        return False, "⚠️ Shiprocket pickup API timed out. Try again later."
+
     except Exception as e:
-        if "invalid token" in str(e).lower():
-            get_token(force_refresh=True)
-        else:
-            raise
+        return False, f"❌ Pickup refresh error: {e}"
     
 def refresh_pickups():
     global pickup_map
     try:
-        r = session.get(SHIPROCKET_BASE + URLS["pickup"], timeout=20)
+        r = session.get(SHIPROCKET_BASE + URLS["pickup"], timeout=60)
         if r.status_code != 200:
             return False, f"❌ Pickup fetch failed: {r.status_code} {r.text}"
         lst = r.json().get("data", {}).get("shipping_address", [])
@@ -172,7 +194,7 @@ def get_available_couriers(pickup_pin, delivery_pin, weight, cod):
             "delivery_postcode": str(delivery_pin),
             "cod": int(bool(cod)),
             "weight": weight
-        }, timeout=15)
+        }, timeout=60)
         if r.status_code != 200: return []
         return r.json().get("data", {}).get("available_courier_companies", []) or []
     except Exception:
@@ -193,7 +215,7 @@ def get_shipping_quote(pickup_pin, delivery_pin, weight, cod):
             "delivery_postcode": delivery_pin,
             "weight": weight,
             "cod": int(bool(cod))
-        }, timeout=15)
+        }, timeout=60)
         if r.status_code != 200: return None
         return r.json().get("data", {}).get("rate")
     except Exception:
@@ -204,7 +226,7 @@ def assign_awb(shipment_id, courier_id=None):
         payload = {"shipment_id": shipment_id}
         if courier_id:
             payload["courier_id"] = courier_id
-        r = session.post(SHIPROCKET_BASE + URLS["assign_awb"], json=payload, timeout=20)
+        r = session.post(SHIPROCKET_BASE + URLS["assign_awb"], json=payload, timeout=40)
         resp_json = r.json()
         if resp_json.get("awb_assign_status") == 1:
             return resp_json["response"]["data"]["awb_code"]
@@ -215,7 +237,7 @@ def assign_awb(shipment_id, courier_id=None):
 
 def generate_label(shipment_id):
     try:
-        r = session.post(SHIPROCKET_BASE + URLS["label"], json={"shipment_id":[shipment_id]}, timeout=20)
+        r = session.post(SHIPROCKET_BASE + URLS["label"], json={"shipment_id":[shipment_id]}, timeout=40)
         resp_json = r.json() if r else {}
         if not resp_json or resp_json.get("label_created") != 1:
             return None
@@ -227,7 +249,7 @@ def generate_label(shipment_id):
 def create_order(payload):
     try:
         ensure_valid_token()  # ✅ handles refresh & retry
-        r = session.post(SHIPROCKET_BASE + URLS["create_order"], json=payload, timeout=20)
+        r = session.post(SHIPROCKET_BASE + URLS["create_order"], json=payload, timeout=40)
         resp_json = r.json() if r else None
         if r.status_code!=200 or (resp_json and resp_json.get("status_code") not in (1,200)):
             return None, r.text
@@ -243,7 +265,7 @@ def schedule_pickup(shipment_ids, pickup_date=None, time_slot_id=None):
         if time_slot_id:
             payload["time_slot_id"] = time_slot_id
 
-        r = session.post(SHIPROCKET_BASE + URLS["generate_pickup"], json=payload, timeout=20)
+        r = session.post(SHIPROCKET_BASE + URLS["generate_pickup"], json=payload, timeout=40)
 
         try:
             resp_json = r.json()
@@ -510,7 +532,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # --- Duplicate order check (Shiprocket API) ---
             recent_orders = []
             try:
-                r = session.get(f"{SHIPROCKET_BASE}/orders", params={"search": data.get("phone","")}, timeout=15)
+                r = session.get(f"{SHIPROCKET_BASE}/orders", params={"search": data.get("phone","")}, timeout=60)
                 if r.status_code == 200:
                     recent_orders = r.json().get("data", [])
             except Exception as e:
