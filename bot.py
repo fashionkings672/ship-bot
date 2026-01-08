@@ -82,30 +82,45 @@ token_expiry = 0  # epoch time
 def get_token(force_refresh=False):
     """
     Get or refresh Shiprocket token safely.
-    Automatically retries if expired or invalid.
     """
     global auth_token, token_expiry
 
-    # ✅ Still valid?
+    # Still valid?
     if not force_refresh and auth_token and time.time() < token_expiry:
         return auth_token
 
-    # 🔁 Otherwise, re-login
     try:
         r = session.post(
             SHIPROCKET_BASE + URLS["login"],
             json={"email": SHIPROCKET_EMAIL, "password": SHIPROCKET_PASSWORD},
             timeout=60
         )
+
         data = r.json() if r else {}
         if "token" not in data:
             raise Exception(data)
+
         auth_token = data["token"]
         token_expiry = time.time() + (23 * 3600)
-        session.headers.update({"Authorization": f"Bearer {auth_token}"})
+
+        session.headers.update({
+            "Authorization": f"Bearer {auth_token}"
+        })
+
         return auth_token
+
     except Exception as e:
         raise Exception(f"Shiprocket login failed: {e}")
+
+
+def ensure_valid_token():
+    """Ensures token is valid, refreshes if expired."""
+    global auth_token
+    try:
+        get_token()
+    except Exception:
+        get_token(force_refresh=True)
+
 
 def refresh_pickups():
     global pickup_map
@@ -140,19 +155,6 @@ def refresh_pickups():
 
     except Exception as e:
         return False, f"❌ Pickup refresh error: {e}"
-    
-def refresh_pickups():
-    global pickup_map
-    try:
-        r = session.get(SHIPROCKET_BASE + URLS["pickup"], timeout=60)
-        if r.status_code != 200:
-            return False, f"❌ Pickup fetch failed: {r.status_code} {r.text}"
-        lst = r.json().get("data", {}).get("shipping_address", [])
-        pickup_map = {p["pickup_location"].lower(): p for p in lst if p.get("pickup_location")}
-        return True, f"✅ Loaded {len(pickup_map)} pickups"
-    except Exception as e:
-        return False, f"❌ Pickup refresh error: {e}"
-
 # ---------------- OPENAI ADDRESS FORMATTING ----------------
 def ai_format_address(raw_text):
     prompt = f"""
