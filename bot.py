@@ -12,52 +12,8 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     ContextTypes, CallbackQueryHandler, filters
 )
-import asyncio
-import openai
-import aiohttp
 
-# --- STEP 1: GLOBAL USER STATE ---
-user_state = {}
-
-# ---------------- CONFIG ----------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-SHIPROCKET_EMAIL = os.getenv("SHIPROCKET_EMAIL")
-SHIPROCKET_PASSWORD = os.getenv("SHIPROCKET_PASSWORD")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-# ✅ Debug logging
-print("=" * 60)
-print("🔍 ENVIRONMENT VARIABLES CHECK")
-print("=" * 60)
-print(f"BOT_TOKEN exists: {BOT_TOKEN is not None}")
-print(f"BOT_TOKEN length: {len(BOT_TOKEN) if BOT_TOKEN else 0}")
-if BOT_TOKEN:
-    print(f"BOT_TOKEN preview: {BOT_TOKEN[:15]}...")
-else:
-    print("BOT_TOKEN preview: NONE ❌")
-print(f"SHIPROCKET_EMAIL exists: {SHIPROCKET_EMAIL is not None}")
-print(f"SHIPROCKET_PASSWORD exists: {SHIPROCKET_PASSWORD is not None}")
-print(f"OPENAI_API_KEY exists: {OPENAI_API_KEY is not None}")
-print("=" * 60)
-
-# ✅ Safety checks
-if not BOT_TOKEN:
-    raise ValueError(
-        "❌ BOT_TOKEN is not set!\n"
-        "Go to Railway > Your Service > Variables tab\n"
-        "Add: BOT_TOKEN=your_token_from_botfather"
-    )
-
-if not SHIPROCKET_EMAIL or not SHIPROCKET_PASSWORD:
-    raise ValueError("❌ SHIPROCKET credentials not set!")
-
-if not OPENAI_API_KEY:
-    raise ValueError("❌ OPENAI_API_KEY not set!")
-
-openai.api_key = OPENAI_API_KEY
-
-CUSTOM_CHANNEL_ID = None
-if os.path.exists("custom_channel.json"):
+    channel.json"):
     try:
         CUSTOM_CHANNEL_ID = json.load(open("custom_channel.json")).get("id")
     except Exception:
