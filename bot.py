@@ -18,11 +18,42 @@ import aiohttp
 
 # --- STEP 1: GLOBAL USER STATE ---
 user_state = {}
+
 # ---------------- CONFIG ----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SHIPROCKET_EMAIL = os.getenv("SHIPROCKET_EMAIL")
 SHIPROCKET_PASSWORD = os.getenv("SHIPROCKET_PASSWORD")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# ✅ Debug logging
+print("=" * 60)
+print("🔍 ENVIRONMENT VARIABLES CHECK")
+print("=" * 60)
+print(f"BOT_TOKEN exists: {BOT_TOKEN is not None}")
+print(f"BOT_TOKEN length: {len(BOT_TOKEN) if BOT_TOKEN else 0}")
+if BOT_TOKEN:
+    print(f"BOT_TOKEN preview: {BOT_TOKEN[:15]}...")
+else:
+    print("BOT_TOKEN preview: NONE ❌")
+print(f"SHIPROCKET_EMAIL exists: {SHIPROCKET_EMAIL is not None}")
+print(f"SHIPROCKET_PASSWORD exists: {SHIPROCKET_PASSWORD is not None}")
+print(f"OPENAI_API_KEY exists: {OPENAI_API_KEY is not None}")
+print("=" * 60)
+
+# ✅ Safety checks
+if not BOT_TOKEN:
+    raise ValueError(
+        "❌ BOT_TOKEN is not set!\n"
+        "Go to Railway > Your Service > Variables tab\n"
+        "Add: BOT_TOKEN=your_token_from_botfather"
+    )
+
+if not SHIPROCKET_EMAIL or not SHIPROCKET_PASSWORD:
+    raise ValueError("❌ SHIPROCKET credentials not set!")
+
+if not OPENAI_API_KEY:
+    raise ValueError("❌ OPENAI_API_KEY not set!")
+
 openai.api_key = OPENAI_API_KEY
 
 CUSTOM_CHANNEL_ID = None
@@ -41,24 +72,27 @@ URLS = {
     "assign_awb": "/courier/assign/awb",
     "label": "/courier/generate/label",
     "get_quote": "/courier/charge/calculate",
-    "generate_pickup": "/courier/generate/pickup",   # ✅ Correct endpoint
+    "generate_pickup": "/courier/generate/pickup",
 }
 COURIER_PRIORITY = ["bluedart", "delhivery", "dtdc"]
 PRODUCTS_FILE = "products.json"
 DEFAULT_PRODUCT = {"length":10,"breadth":8,"height":5,"weight":0.5}
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 log = logging.getLogger("telegram_shipbot")
 session = requests.Session()
 pickup_map = {}
-shipment_awb_map = {}  # Ensure AWB mapping
+shipment_awb_map = {}
 
 # ---------------- HELPERS ----------------
 def strict_phone(ph):
     if not ph:
         return None
     ph = re.sub(r"\D", "", str(ph))
-    return ph if len(ph) == 10 and ph in "6789" else None
+    return ph if len(ph) == 10 and ph[0] in "6789" else None
 
 def parse_payment(payment_str):
     m = re.match(r"(prepaid|cod)\s+(\d+\.?\d*)", (payment_str or "").strip(), re.I)
@@ -77,19 +111,17 @@ def normalize_pickup_obj(parsed):
 
 # ---------------- SHIPROCKET LOGIN / PICKUP ----------------
 auth_token = None
-token_expiry = 0  # epoch time
+token_expiry = 0
 
 def get_token(force_refresh=False):
-    """
-    Get or refresh Shiprocket token safely.
-    """
+    """Get or refresh Shiprocket token safely."""
     global auth_token, token_expiry
 
-    # Still valid?
     if not force_refresh and auth_token and time.time() < token_expiry:
         return auth_token
 
     try:
+        log.info("🔐 Logging into Shiprocket...")
         r = session.post(
             SHIPROCKET_BASE + URLS["login"],
             json={"email": SHIPROCKET_EMAIL, "password": SHIPROCKET_PASSWORD},
@@ -98,7 +130,7 @@ def get_token(force_refresh=False):
 
         data = r.json() if r else {}
         if "token" not in data:
-            raise Exception(data)
+            raise Exception(f"Login failed: {data}")
 
         auth_token = data["token"]
         token_expiry = time.time() + (23 * 3600)
@@ -107,15 +139,16 @@ def get_token(force_refresh=False):
             "Authorization": f"Bearer {auth_token}"
         })
 
+        log.info("✅ Shiprocket token obtained")
         return auth_token
 
     except Exception as e:
+        log.error(f"❌ Shiprocket login failed: {e}")
         raise Exception(f"Shiprocket login failed: {e}")
 
 
 def ensure_valid_token():
     """Ensures token is valid, refreshes if expired."""
-    global auth_token
     try:
         get_token()
     except Exception:
@@ -127,6 +160,7 @@ def refresh_pickups():
     try:
         ensure_valid_token()
 
+        log.info("📍 Fetching pickup locations...")
         r = session.get(
             SHIPROCKET_BASE + URLS["pickup"],
             timeout=60
@@ -148,13 +182,16 @@ def refresh_pickups():
             if p.get("pickup_location")
         }
 
+        log.info(f"✅ Loaded {len(pickup_map)} pickup locations")
         return True, f"✅ Loaded {len(pickup_map)} pickups"
 
     except requests.exceptions.ConnectTimeout:
         return False, "⚠️ Shiprocket pickup API timed out. Try again later."
 
     except Exception as e:
+        log.error(f"❌ Pickup refresh error: {e}")
         return False, f"❌ Pickup refresh error: {e}"
+
 # ---------------- OPENAI ADDRESS FORMATTING ----------------
 def ai_format_address(raw_text):
     prompt = f"""
@@ -179,14 +216,17 @@ Alternate Phone: <10_digit_alt_phone_or_leave_blank>
 Prepaid/COD: <payment_type> <amount>
 Quantity: <number_of_units>
 """
-    response = openai.chat.completions.create(
-        model="gpt-5",
-        messages=[{"role":"user","content":prompt}],
-        temperature=1
-    )
-    # ✅ FIXED: access first choice, not the list itself
-    formatted_text = response.choices[0].message.content.strip()
-    return formatted_text
+    try:
+        response = openai.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role":"user","content":prompt}],
+            temperature=0.3
+        )
+        formatted_text = response.choices[0].message.content.strip()
+        return formatted_text
+    except Exception as e:
+        log.error(f"❌ OpenAI API error: {e}")
+        raise
     
 # ---------------- SHIPROCKET API ----------------
 def get_available_couriers(pickup_pin, delivery_pin, weight, cod):
@@ -199,7 +239,8 @@ def get_available_couriers(pickup_pin, delivery_pin, weight, cod):
         }, timeout=60)
         if r.status_code != 200: return []
         return r.json().get("data", {}).get("available_courier_companies", []) or []
-    except Exception:
+    except Exception as e:
+        log.error(f"❌ Error getting couriers: {e}")
         return []
 
 def pick_courier(couriers):
@@ -250,7 +291,7 @@ def generate_label(shipment_id):
 
 def create_order(payload):
     try:
-        ensure_valid_token()  # ✅ handles refresh & retry
+        ensure_valid_token()
         r = session.post(SHIPROCKET_BASE + URLS["create_order"], json=payload, timeout=40)
         resp_json = r.json() if r else None
         if r.status_code!=200 or (resp_json and resp_json.get("status_code") not in (1,200)):
@@ -274,7 +315,6 @@ def schedule_pickup(shipment_ids, pickup_date=None, time_slot_id=None):
         except Exception:
             return False, f"❌ Invalid response: {r.text}"
 
-        # Extract nested response safely
         response_data = resp_json.get("response", {})
         status = resp_json.get("status") or response_data.get("status")
         pickup_id = (
@@ -287,25 +327,22 @@ def schedule_pickup(shipment_ids, pickup_date=None, time_slot_id=None):
         awb_info = response_data.get("data")
 
         if r.status_code == 200:
-            # ✅ Case 1: Fresh pickup
             if resp_json.get("pickup_scheduled") or status == 1:
                 return True, f"✅ Pickup scheduled successfully! Pickup ID: {pickup_id or 'N/A'}"
 
-            # ✅ Case 2: Already scheduled (status=3 inside response)
             if status == 3:
                 return True, f"✅ Pickup already scheduled for {pickup_date_str}.\n📦 {awb_info}"
 
-            # ⚠️ Duplicate pickup
             if "already generated" in str(resp_json).lower():
                 return False, f"⚠️ Pickup already generated.\n📦 {awb_info}"
 
-            # ❌ Fallback
             return False, f"❌ Pickup not scheduled: {resp_json}"
         else:
             return False, f"❌ API Error {r.status_code}: {resp_json}"
 
     except Exception as e:
         return False, f"⚠️ Error scheduling pickup: {e}"
+
 # ---------------- NEW: create_shipment_with_fallback ----------------
 def create_shipment_with_fallback(shipment_id, pickup_pin, delivery_pin, weight, cod):
     couriers = get_available_couriers(pickup_pin, delivery_pin, weight, cod)
@@ -373,7 +410,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()  # RESET ALL FLAGS
+    context.user_data.clear()
     await update.message.reply_text("👋 Welcome! Use the buttons below:", reply_markup=MAIN_KEYBOARD)
     
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -385,8 +422,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parts = text.split()
             if len(parts) < 5:
                 raise ValueError("bad format")
-            name = parts
-            l = float(parts[1]); b = float(parts[2]); h = float(parts[3]); w = float(parts[4])
+            name = " ".join(parts[:-4])
+            l = float(parts[-4]); b = float(parts[-3]); h = float(parts[-2]); w = float(parts[-1])
             products = {}
             if os.path.exists(PRODUCTS_FILE):
                 products = json.load(open(PRODUCTS_FILE))
@@ -417,7 +454,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not products:
             await update.message.reply_text("⚠️ No products saved yet.", reply_markup=MAIN_KEYBOARD)
             return
-        # send each product with inline edit/delete buttons
         for name, prod in products.items():
             text_prod = f"{name}: {prod['length']}x{prod['breadth']}x{prod['height']} | {prod['weight']}kg"
             kb = [[
@@ -440,7 +476,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Cancelled. Back to main menu.", reply_markup=MAIN_KEYBOARD)
         return
 
-    # --- 2) Add product (user typed product details) ---
+    # --- 2) Add product ---
     if context.user_data.get("awaiting_product"):
         parts = text.strip().split()
         if len(parts) < 5:
@@ -464,7 +500,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Product '{product_name}' saved successfully", reply_markup=MAIN_KEYBOARD)
         return
 
-    # --- 3) Create shipment (user typed messy address/order) ---
+    # --- 3) Create shipment ---
     if context.user_data.get("awaiting_shipment"):
         try:
             formatted = ai_format_address(text)
@@ -527,11 +563,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "height": float(product_data.get("height")),
                 "weight": float(product_data.get("weight")),
             }
-            # ✅ Add this safely inside the same indentation
+            
             if CUSTOM_CHANNEL_ID:
                 payload["channel_id"] = CUSTOM_CHANNEL_ID
 
-            # --- Duplicate order check (Shiprocket API) ---
+            # --- Duplicate order check ---
             recent_orders = []
             try:
                 r = session.get(f"{SHIPROCKET_BASE}/orders", params={"search": data.get("phone","")}, timeout=60)
@@ -544,7 +580,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     order_date = datetime.strptime(order.get("created_at",""), "%Y-%m-%d %H:%M:%S")
                     if order.get("billing_phone") == data.get("phone") and (datetime.now()-order_date).days < 7:
-                        # Ask user confirmation before creating duplicate shipment
                         keyboard = [
                             [
                                 InlineKeyboardButton("✅ Yes", callback_data=f"dup_yes_{json.dumps(payload)}"),
@@ -559,7 +594,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
 
-            # --- Create order normally ---
+            # --- Create order ---
             resp, err = create_order(payload)
             if not resp:
                 if "insufficient balance" in str(err).lower():
@@ -611,7 +646,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             data_pdf = await resp_pdf.read()
                             await update.message.reply_document(document=data_pdf, filename=f"{awb}.pdf")
 
-                # --- Ask about pickup with inline buttons (only after shipment created) ---
                 keyboard = [
                     [
                         InlineKeyboardButton("✅ Yes", callback_data=f"schedule_yes_{shipment_id}"),
@@ -622,12 +656,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Do you want to schedule pickup?", reply_markup=reply_markup)
 
         except Exception as e:
+            log.error(f"❌ Shipment creation error: {e}")
             await update.message.reply_text(f"⚠️ Error: {e}", reply_markup=MAIN_KEYBOARD)
         finally:
             context.user_data["awaiting_shipment"]=False
         return
 
-    # If nothing matched
     await update.message.reply_text("Please use the keyboard buttons.", reply_markup=MAIN_KEYBOARD)
 
 # ---------------- CALLBACK HANDLER ----------------
@@ -636,12 +670,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data or ""
 
-    # --- RESET USER FLAGS ---
     context.user_data.pop("awaiting_product", None)
     context.user_data.pop("editing_product", None)
     context.user_data.pop("awaiting_shipment", None)
 
-    # --- Product delete ---
     if data.startswith("delete_"):
         name = data.split("delete_", 1)[1]
         products = {}
@@ -655,7 +687,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Product not found.")
         return
 
-    # --- Product edit ---
     if data.startswith("edit_"):
         name = data.split("edit_", 1)[1]
         products = {}
@@ -672,11 +703,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Product not found.")
         return
 
-    # --- Duplicate order confirmation ---
     if data.startswith("dup_yes_"):
         try:
             payload = json.loads(data.split("dup_yes_", 1)[1])
-            # Call create_order again with saved payload
             resp, err = create_order(payload)
             if not resp:
                 await query.message.reply_text(f"❌ Error creating shipment: {err}", reply_markup=MAIN_KEYBOARD)
@@ -696,7 +725,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             tracking_link = f"https://shiprocket.co/tracking/{awb}"
 
-            # --- Increment order counter ---
             count_file = "order_count.json"
             count_data = {"count": 0}
             if os.path.exists(count_file):
@@ -721,10 +749,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("✅ Duplicate order cancelled.", reply_markup=MAIN_KEYBOARD)
         return
 
-    # --- Schedule pickup ---
     if data.startswith("schedule_yes_"):
         shipment_id = data.replace("schedule_yes_", "")
-        ids = [shipment_id]  # keep as string UUID
+        ids = [shipment_id]
         ok, msg = schedule_pickup(ids)
         await query.edit_message_text(("✅ " if ok else "❌ ") + msg)
         return
@@ -734,32 +761,34 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"❌ Shipment {shipment_id} not scheduled")
         return
 
-    # fallback
     await query.edit_message_text("⚠️ Unknown action")
 
 # ---------------- MAIN ----------------
 async def main():
-    log.info("Bot starting...")
+    log.info("🚀 Bot starting...")
 
-    # ✅ Ensure token valid before first use
     try:
         get_token()
         log.info("✅ Shiprocket token fetched")
     except Exception as e:
         log.error(f"❌ Shiprocket login failed: {e}")
-        return
+        raise
 
-    ok,msg = refresh_pickups()
+    ok, msg = refresh_pickups()
     log.info(msg)
 
+    log.info(f"🤖 Building Telegram bot with token: {BOT_TOKEN[:15]}...")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start",start))
+    
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
+    
+    log.info("✅ Bot handlers registered")
+    log.info("🔄 Starting polling...")
     await app.run_polling()
 
-if __name__=="__main__":
+if __name__ == "__main__":
     import nest_asyncio
     nest_asyncio.apply()
     asyncio.run(main())
-    
