@@ -1,7 +1,12 @@
-python-telegram-bot>=20.0
-requests
-python-dotenv
-aiohttp==3.10.5
-openai>=1.30.0
-nest_asyncio==1.6.0
+# Telegram Bot Framework
+python-telegram-bot==20.7
 
+# Async support
+nest-asyncio==1.6.0
+aiohttp==3.10.5
+
+# HTTP Requests
+requests==2.31.0
+
+# OpenAI
+openai>=1.30.0
