@@ -22,9 +22,9 @@ import asyncio
 import openai
 import aiohttp
 
-# Import our new orders manager
+# Import our shared orders manager from shared/ folder
 
-from orders_manager import (
+from shared.orders_manager import (
 save_order, find_order_by_phone, find_order_by_awb,
 mark_advance_paid, convert_to_full_cod, add_manual_shipment,
 get_today_stats, get_week_stats, format_order_details
@@ -1270,7 +1270,7 @@ if data.startswith("schedule_yes_"):
     
     # NEW: Update order with pickup status
     if ok and phone:
-        from orders_manager import load_orders, save_orders
+        from shared.orders_manager import load_orders, save_orders
         orders = load_orders()
         for order in orders:
             if order.get('phone') == phone and order.get('shiprocket', {}).get('shipment_id') == shipment_id:
