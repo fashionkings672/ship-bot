@@ -585,7 +585,8 @@ async def handle_create_shipment(update, context, text):
         payment_method, sub_total = parse_payment(data.get("prepaid/cod","Prepaid 0"))
         sr_payment_method = "COD" if payment_method.lower()=="cod" else "Prepaid"
         cod_amount = sub_total if sr_payment_method=="COD" else 0
-        qty = int(data.get("quantity","1"))
+        qty_str = data.get("quantity","1").strip()
+        qty = int(qty_str) if qty_str and qty_str.isdigit() else 1
         
         products = json.load(open(PRODUCTS_FILE)) if os.path.exists(PRODUCTS_FILE) else {}
         product_data = products.get(data.get("product",""), DEFAULT_PRODUCT)
@@ -852,4 +853,3 @@ if __name__ == "__main__":
     import nest_asyncio
     nest_asyncio.apply()
     asyncio.run(main())
-    
