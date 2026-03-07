@@ -1,390 +1,399 @@
-# orders_manager.py
 """
-Orders Manager for Backbenchers Bot
-Handles all order operations with orders.json
+orders_manager.py — Oneboxx Ship Bot
+Order database, payment tracking, Google Sheets sync
 """
 
+import os
 import json
-import os
-from datetime import datetime, timedelta
-from typing import Optional, List, Dict
+import logging
+from datetime import datetime, date, timedelta
 
-import os
-# Store orders.json in same directory as this file
+log = logging.getLogger("orders_manager")
 ORDERS_FILE = "orders.json"
+ADS_FILE    = "ads_data.json"
+COUNT_FILE  = "order_count.json"
 
-def init_orders_file():
-    """Initialize orders.json if it doesn't exist"""
+# ─── LOCAL DB ─────────────────────────────
+
+def load_orders():
     if not os.path.exists(ORDERS_FILE):
-        data = {
-            "orders": [],
-            "last_updated": datetime.now().isoformat()
-        }
-        with open(ORDERS_FILE, 'w') as f:
-            json.dump(data, f, indent=2)
-        print(f"✅ Created {ORDERS_FILE}")
-
-def load_orders() -> List[Dict]:
-    """Load all orders from orders.json"""
+        return []
     try:
-        init_orders_file()
-        with open(ORDERS_FILE, 'r') as f:
-            data = json.load(f)
-            return data.get('orders', [])
-    except Exception as e:
-        print(f"❌ Error loading orders: {e}")
+        with open(ORDERS_FILE) as f:
+            return json.load(f)
+    except Exception:
         return []
 
-def save_orders(orders: List[Dict]):
-    """Save orders to orders.json"""
-    try:
-        data = {
-            "orders": orders,
-            "last_updated": datetime.now().isoformat()
-        }
-        with open(ORDERS_FILE, 'w') as f:
-            json.dump(data, f, indent=2)
-        print(f"✅ Saved {len(orders)} orders to {ORDERS_FILE}")
-    except Exception as e:
-        print(f"❌ Error saving orders: {e}")
+def save_orders(orders):
+    with open(ORDERS_FILE, "w") as f:
+        json.dump(orders, f, indent=2, default=str)
 
-def save_order(order_data: Dict) -> bool:
-    """
-    Save a new order to orders.json
-    
-    Args:
-        order_data: Dictionary containing order information
-        
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    try:
-        orders = load_orders()
-        
-        # Add timestamp if not present
-        if 'created_at' not in order_data:
-            order_data['created_at'] = datetime.now().isoformat()
-        
-        # Add to orders list
-        orders.append(order_data)
-        
-        # Save
-        save_orders(orders)
-        
-        print(f"✅ Saved order #{order_data.get('order_number', 'N/A')}")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Error saving order: {e}")
-        return False
+def next_order_number():
+    data = {}
+    if os.path.exists(COUNT_FILE):
+        with open(COUNT_FILE) as f:
+            data = json.load(f)
+    n = data.get("count", 0) + 1
+    data["count"] = n
+    with open(COUNT_FILE, "w") as f:
+        json.dump(data, f)
+    return n
 
-def find_order_by_phone(phone: str) -> Optional[Dict]:
-    """Find order by phone number (returns most recent)"""
-    try:
-        orders = load_orders()
-        
-        # Filter by phone
-        matching = [o for o in orders if o.get('phone') == phone]
-        
-        if not matching:
-            return None
-        
-        # Return most recent
-        matching.sort(key=lambda x: x.get('created_at', ''), reverse=True)
-        return matching[0]
-        
-    except Exception as e:
-        print(f"❌ Error finding order: {e}")
-        return None
+def save_order(order):
+    orders = load_orders()
+    orders.append(order)
+    save_orders(orders)
+    _sync_to_sheets(order)
 
-def find_order_by_awb(awb: str) -> Optional[Dict]:
-    """Find order by AWB number (Shiprocket or Vendor)"""
-    try:
-        orders = load_orders()
-        
-        for order in orders:
-            # Check Shiprocket AWB
-            if order.get('shiprocket', {}).get('awb') == awb:
-                return order
-            
-            # Check Vendor AWB
-            if order.get('vendor_shipment', {}).get('awb') == awb:
-                return order
-        
-        return None
-        
-    except Exception as e:
-        print(f"❌ Error finding order by AWB: {e}")
-        return None
+def find_by_phone(phone):
+    phone = str(phone).strip()
+    matches = [o for o in load_orders() if str(o.get("phone","")).strip() == phone]
+    return matches[-1] if matches else None
 
-def find_order_by_order_number(order_number: int) -> Optional[Dict]:
-    """Find order by order number"""
-    try:
-        orders = load_orders()
-        
-        for order in orders:
-            if order.get('order_number') == order_number:
-                return order
-        
-        return None
-        
-    except Exception as e:
-        print(f"❌ Error finding order: {e}")
-        return None
+def find_by_awb(awb):
+    awb = str(awb).strip().upper()
+    for o in reversed(load_orders()):
+        if str((o.get("shiprocket") or {}).get("awb","")).upper() == awb:
+            return o
+        if str((o.get("manual") or {}).get("awb","")).upper() == awb:
+            return o
+    return None
 
-def update_order(phone: str, updates: Dict) -> bool:
-    """
-    Update an existing order
-    
-    Args:
-        phone: Phone number to identify order
-        updates: Dictionary of fields to update
-        
-    Returns:
-        bool: True if successful
-    """
-    try:
-        orders = load_orders()
-        
-        # Find order
-        for i, order in enumerate(orders):
-            if order.get('phone') == phone:
-                # Update fields
-                for key, value in updates.items():
-                    order[key] = value
-                
-                # Update timestamp
-                order['updated_at'] = datetime.now().isoformat()
-                
-                # Save
-                save_orders(orders)
-                
-                print(f"✅ Updated order for {phone}")
-                return True
-        
-        print(f"⚠️ Order not found for {phone}")
-        return False
-        
-    except Exception as e:
-        print(f"❌ Error updating order: {e}")
-        return False
+def update_order(phone, **fields):
+    orders = load_orders()
+    for o in reversed(orders):
+        if str(o.get("phone","")).strip() == str(phone).strip():
+            o.update(fields)
+            save_orders(orders)
+            _sync_update(o)
+            return o
+    return None
 
-def mark_advance_paid(phone: str, amount: float) -> bool:
-    """Mark advance as paid for an order"""
-    try:
-        updates = {
-            'advance_amount': amount,
-            'advance_paid': True,
-            'advance_date': datetime.now().isoformat(),
-            'type': 'advance_paid'
-        }
-        
-        return update_order(phone, updates)
-        
-    except Exception as e:
-        print(f"❌ Error marking advance: {e}")
-        return False
+def update_order_by_id(order_id, **fields):
+    orders = load_orders()
+    for o in orders:
+        if o.get("order_id") == order_id:
+            o.update(fields)
+            save_orders(orders)
+            _sync_update(o)
+            return o
+    return None
 
-def convert_to_full_cod(phone: str, new_shipment_data: Dict) -> bool:
-    """
-    Convert order to Full COD
-    
-    Args:
-        phone: Phone number
-        new_shipment_data: New shipment details after rebooking
-    """
-    try:
-        orders = load_orders()
-        
-        for order in orders:
-            if order.get('phone') == phone:
-                # Mark old shipment as cancelled
-                if order.get('shiprocket'):
-                    order['shiprocket']['status'] = 'cancelled'
-                    order['shiprocket']['cancelled_at'] = datetime.now().isoformat()
-                
-                # Add new shipment
-                order['shiprocket'] = new_shipment_data
-                
-                # Update type
-                order['type'] = 'full_cod'
-                order['updated_at'] = datetime.now().isoformat()
-                
-                # Save
-                save_orders(orders)
-                
-                print(f"✅ Converted to Full COD for {phone}")
-                return True
-        
-        return False
-        
-    except Exception as e:
-        print(f"❌ Error converting to COD: {e}")
-        return False
+# ─── PAYMENT ──────────────────────────────
 
-def add_manual_shipment(phone: str, courier_name: str, awb: str, advance: float = 0) -> bool:
-    """Add manual/vendor shipment details"""
-    try:
-        orders = load_orders()
-        
-        for order in orders:
-            if order.get('phone') == phone:
-                # Cancel Shiprocket if exists
-                if order.get('shiprocket'):
-                    order['shiprocket']['status'] = 'cancelled'
-                    order['shiprocket']['cancelled_reason'] = 'Moved to vendor shipment'
-                
-                # Add vendor shipment
-                order['vendor_shipment'] = {
-                    'courier': courier_name,
-                    'awb': awb,
-                    'added_at': datetime.now().isoformat(),
-                    'status': 'active',
-                    'type': 'manual_entry'
-                }
-                
-                # Update advance if provided
-                if advance > 0:
-                    order['advance_amount'] = advance
-                    order['advance_paid'] = True
-                    order['advance_date'] = datetime.now().isoformat()
-                
-                order['type'] = 'manual_shipment'
-                order['updated_at'] = datetime.now().isoformat()
-                
-                # Save
-                save_orders(orders)
-                
-                print(f"✅ Added manual shipment for {phone}")
-                return True
-        
-        return False
-        
-    except Exception as e:
-        print(f"❌ Error adding manual shipment: {e}")
-        return False
+TOTAL_PAYABLE = 3300
 
-def get_today_stats() -> Dict:
-    """Get today's statistics"""
-    try:
-        orders = load_orders()
-        today = datetime.now().date()
-        
-        today_orders = [
-            o for o in orders
-            if datetime.fromisoformat(o['created_at']).date() == today
-        ]
-        
-        stats = {
-            'total_orders': len(today_orders),
-            'total_revenue': sum(o.get('total', 0) for o in today_orders),
-            'total_advances': sum(o.get('advance_amount', 0) for o in today_orders if o.get('advance_paid')),
-            'advance_paid_count': len([o for o in today_orders if o.get('advance_paid')]),
-            'full_cod_count': len([o for o in today_orders if o.get('type') == 'full_cod']),
-            'shiprocket_count': len([o for o in today_orders if o.get('shiprocket', {}).get('status') == 'active']),
-            'manual_count': len([o for o in today_orders if o.get('vendor_shipment')]),
-            'creative_breakdown': {}
-        }
-        
-        # Creative breakdown
-        for order in today_orders:
-            creative = order.get('creative', 'Unknown')
-            if creative not in stats['creative_breakdown']:
-                stats['creative_breakdown'][creative] = 0
-            stats['creative_breakdown'][creative] += 1
-        
-        return stats
-        
-    except Exception as e:
-        print(f"❌ Error getting stats: {e}")
-        return {}
+def calc_cod(courier_paid, advance_paid):
+    return TOTAL_PAYABLE - int(courier_paid or 0) - int(advance_paid or 0)
 
-def get_week_stats() -> Dict:
-    """Get this week's statistics"""
-    try:
-        orders = load_orders()
-        week_ago = datetime.now().date() - timedelta(days=7)
-        
-        week_orders = [
-            o for o in orders
-            if datetime.fromisoformat(o['created_at']).date() >= week_ago
-        ]
-        
-        stats = {
-            'total_orders': len(week_orders),
-            'total_revenue': sum(o.get('total', 0) for o in week_orders),
-            'total_advances': sum(o.get('advance_amount', 0) for o in week_orders if o.get('advance_paid')),
-            'advance_conversion': len([o for o in week_orders if o.get('advance_paid')]) / len(week_orders) * 100 if week_orders else 0,
-        }
-        
-        return stats
-        
-    except Exception as e:
-        print(f"❌ Error getting week stats: {e}")
-        return {}
+def is_standard_preset(courier_paid, advance_paid):
+    c, a = int(courier_paid or 0), int(advance_paid or 0)
+    return (c == 300 and a == 600) or (c == 200 and a == 400)
 
-def format_order_details(order: Dict) -> str:
-    """Format order details for display in Telegram"""
-    try:
-        created = datetime.fromisoformat(order['created_at']).strftime('%d %b, %I:%M %p')
-        
-        text = f"""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📦 ORDER #{order.get('order_number', 'N/A')}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Created: {created}
+def payment_status(order):
+    c = order.get("courier_paid") or 0
+    a = order.get("advance_paid")
+    if a is None and c > 0:
+        return "courier_only"
+    if a is None:
+        return "nothing"
+    if a == 0:
+        return "full_cod"
+    return "advance_paid"
 
-👤 CUSTOMER:
-Name: {order.get('customer_name', 'N/A')}
-Phone: {order.get('phone', 'N/A')}
-City: {order.get('city', 'N/A')}, {order.get('state', 'N/A')}
+# ─── LABEL QUEUE ──────────────────────────
 
-📦 PRODUCT:
-Product: {order.get('product', 'N/A')}
-Creative: {order.get('creative', 'N/A')}
-Price: ₹{order.get('total', 0):,}
+def get_label_queue():
+    today = date.today().isoformat()
+    result = []
+    for o in load_orders():
+        a = o.get("advance_paid")
+        if a is None:
+            continue  # courier only or nothing — not eligible
+        dl = o.get("label_downloaded_date","")
+        if dl and dl >= today:
+            continue  # already downloaded today
+        result.append(o)
+    return result
 
-💰 PAYMENT:
-₹300 Paid: {'✅' if order.get('payment_300_paid') else '❌'}
-"""
-        
-        # Advance info
-        if order.get('advance_paid'):
-            text += f"Advance: ✅ ₹{order.get('advance_amount', 0)} paid\n"
-            text += f"Balance COD: ₹{order.get('total', 0) - order.get('advance_amount', 0)}\n"
+def get_label_queue_by_vendor(vendor):
+    vendor = vendor.lower()
+    result = []
+    for o in get_label_queue():
+        vm = o.get("manual") or {}
+        v  = vm.get("vendor","shiprocket").lower()
+        if v == vendor or (vendor == "shiprocket" and not vm.get("vendor")):
+            result.append(o)
+    return result
+
+def get_all_vendors():
+    vendors = set()
+    for o in load_orders():
+        vm = o.get("manual") or {}
+        vendors.add(vm.get("vendor","Shiprocket") or "Shiprocket")
+    return sorted(vendors)
+
+def mark_label_downloaded(order_id):
+    orders = load_orders()
+    for o in orders:
+        if o.get("order_id") == order_id:
+            o["label_downloaded"]      = True
+            o["label_downloaded_date"] = date.today().isoformat()
+            save_orders(orders)
+            _sync_update(o)
+            return True
+    return False
+
+# ─── PAYMENT REPORT ───────────────────────
+
+def get_payment_report():
+    pending  = []
+    advance  = []
+    full_cod = []
+    nothing  = []
+    for o in load_orders():
+        s = payment_status(o)
+        if s == "courier_only":
+            pending.append(o)
+        elif s == "advance_paid":
+            advance.append(o)
+        elif s == "full_cod":
+            full_cod.append(o)
         else:
-            text += f"Advance: ❌ Pending\n"
-        
-        # Shiprocket info
-        if order.get('shiprocket'):
-            sr = order['shiprocket']
-            status_emoji = '✅' if sr.get('status') == 'active' else '❌'
-            text += f"""
-🚚 SHIPROCKET:
-AWB: {sr.get('awb', 'N/A')}
-Courier: {sr.get('courier', 'N/A')}
-Status: {status_emoji} {sr.get('status', 'N/A').title()}
-Tracking: {sr.get('tracking', 'N/A')}
-"""
-        
-        # Vendor shipment info
-        if order.get('vendor_shipment'):
-            vs = order['vendor_shipment']
-            text += f"""
-📝 VENDOR SHIPMENT:
-Courier: {vs.get('courier', 'N/A')}
-AWB: {vs.get('awb', 'N/A')}
-Type: Manual Entry
-Status: ✅ Active
-"""
-        
-        text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        
-        return text
-        
-    except Exception as e:
-        print(f"❌ Error formatting order: {e}")
-        return "Error displaying order details"
+            nothing.append(o)
+    return {"pending": pending, "advance": advance,
+            "full_cod": full_cod, "nothing": nothing}
 
-# Initialize on import
-init_orders_file()
+# ─── CREATIVE ─────────────────────────────
+
+def get_missing_creative(period="today"):
+    today     = date.today().isoformat()
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    orders    = load_orders()
+    if period == "today":
+        orders = [o for o in orders if o.get("created_at","").startswith(today)]
+    elif period == "yesterday":
+        orders = [o for o in orders if o.get("created_at","").startswith(yesterday)]
+    return [o for o in orders if not o.get("creative")]
+
+def set_creative(phone, creative):
+    return update_order(phone, creative=creative.upper())
+
+def get_creative_stats(days=7):
+    cutoff  = (date.today() - timedelta(days=days)).isoformat()
+    orders  = [o for o in load_orders() if o.get("created_at","") >= cutoff]
+    stats   = {}
+    for o in orders:
+        c = o.get("creative") or "—"
+        if c not in stats:
+            stats[c] = {"orders": 0, "revenue": 0}
+        stats[c]["orders"]  += 1
+        stats[c]["revenue"] += o.get("total", 0)
+    return dict(sorted(stats.items(), key=lambda x: x[1]["orders"], reverse=True))
+
+# ─── STATS ────────────────────────────────
+
+def get_today_stats():
+    today  = date.today().isoformat()
+    orders = [o for o in load_orders() if o.get("created_at","").startswith(today)]
+    return {
+        "total":              len(orders),
+        "advance_paid":       len([o for o in orders if (o.get("advance_paid") or -1) > 0]),
+        "full_cod":           len([o for o in orders if o.get("advance_paid") == 0]),
+        "courier_only":       len([o for o in orders if payment_status(o) == "courier_only"]),
+        "nothing":            len([o for o in orders if payment_status(o) == "nothing"]),
+        "revenue":            sum(o.get("total",0) for o in orders),
+        "advance_collected":  sum((o.get("advance_paid") or 0) for o in orders),
+        "courier_collected":  sum((o.get("courier_paid") or 0) for o in orders),
+    }
+
+def get_week_stats():
+    cutoff = (date.today() - timedelta(days=7)).isoformat()
+    orders = [o for o in load_orders() if o.get("created_at","") >= cutoff]
+    paid   = [o for o in orders if payment_status(o) in ("advance_paid","full_cod")]
+    rate   = round(len(paid)/len(orders)*100,1) if orders else 0
+    return {
+        "total":     len(orders),
+        "revenue":   sum(o.get("total",0) for o in orders),
+        "conv_rate": rate,
+    }
+
+# ─── ADS ──────────────────────────────────
+
+def load_ads():
+    if not os.path.exists(ADS_FILE):
+        return {}
+    with open(ADS_FILE) as f:
+        return json.load(f)
+
+def save_ads(data):
+    with open(ADS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def log_adsspend(total=None, breakdown=None):
+    ads   = load_ads()
+    today = date.today().isoformat()
+    ads.setdefault(today, {})
+    if total:
+        ads[today]["total_spend"] = total
+    if breakdown:
+        for k, v in breakdown.items():
+            ads[today][f"spend_{k}"] = v
+        ads[today]["total_spend"] = sum(
+            v for k, v in ads[today].items() if k.startswith("spend_"))
+    save_ads(ads)
+    return ads[today]
+
+def log_campaign_orders(breakdown):
+    ads   = load_ads()
+    today = date.today().isoformat()
+    ads.setdefault(today, {})
+    total = 0
+    for k, v in breakdown.items():
+        ads[today][f"orders_{k}"] = v
+        total += v
+    ads[today]["total_campaign_orders"] = total
+    spend = ads[today].get("total_spend", 0)
+    if spend and total:
+        ads[today]["cpo"] = round(spend / total)
+    save_ads(ads)
+    return ads[today]
+
+def get_today_ads():
+    return load_ads().get(date.today().isoformat(), {})
+
+# ─── FORMAT ───────────────────────────────
+
+def format_order(order):
+    sr  = order.get("shiprocket") or {}
+    vm  = order.get("manual") or {}
+    c   = order.get("courier_paid") or 0
+    a   = order.get("advance_paid")
+    cod = order.get("cod_amount", 0)
+    s   = payment_status(order)
+
+    if s == "nothing":
+        pay = "❌ Nothing paid"
+    elif s == "courier_only":
+        pay = f"Courier ₹{c} paid | Advance ⏳ pending"
+    elif s == "full_cod":
+        pay = f"Courier ₹{c} | Full COD | Delivery ₹{cod}"
+    else:
+        pay = f"Courier ₹{c} | Advance ₹{a} | Delivery ₹{cod}"
+
+    lines = [
+        "————————————————————",
+        f"📦 ORDER #{order.get('order_number')}",
+        "————————————————————",
+        f"📅 {order.get('created_at','')[:16].replace('T',' ')}",
+        "",
+        f"👤 {order.get('customer_name','')}",
+        f"📞 {order.get('phone','')}",
+        f"📍 {order.get('city','')}, {order.get('state','')}, {order.get('pincode','')}",
+        "",
+        f"📦 {order.get('product','')} | ₹{order.get('total',0):,}",
+        f"🎨 {order.get('creative','—')}",
+        "",
+        f"💰 {pay}",
+    ]
+    if sr.get("awb"):
+        lines += ["", f"🚚 {sr.get('courier','')} | {sr.get('awb','')}", f"🔗 {sr.get('tracking','')}"]
+    if vm.get("awb"):
+        lines += ["", f"🏪 {vm.get('vendor','')} | {vm.get('courier','')} | {vm.get('awb','')}"]
+    if order.get("label_downloaded_date"):
+        lines.append(f"📥 Downloaded: {order['label_downloaded_date']}")
+    lines.append("————————————————————")
+    return "\n".join(lines)
+
+# ─── GOOGLE SHEETS ────────────────────────
+
+_gc = None
+
+def get_sheets_client():
+    global _gc
+    if _gc:
+        return _gc
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        raw = os.getenv("GOOGLE_CREDENTIALS_JSON")
+        if not raw:
+            return None
+        creds = Credentials.from_service_account_info(
+            json.loads(raw),
+            scopes=["https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive"]
+        )
+        _gc = gspread.authorize(creds)
+        return _gc
+    except Exception as e:
+        log.error(f"Sheets: {e}")
+        return None
+
+def _order_to_row(o):
+    sr = o.get("shiprocket") or {}
+    vm = o.get("manual") or {}
+    return [
+        o.get("order_number",""),
+        o.get("created_at","")[:16].replace("T"," "),
+        o.get("customer_name",""),
+        o.get("phone",""),
+        o.get("city",""),
+        o.get("state",""),
+        o.get("pincode",""),
+        o.get("product",""),
+        o.get("creative",""),
+        o.get("total",0),
+        o.get("courier_paid",0) or 0,
+        o.get("advance_paid",""),
+        o.get("cod_amount",0),
+        payment_status(o),
+        vm.get("vendor","") or "Shiprocket",
+        vm.get("courier","") or sr.get("courier",""),
+        vm.get("awb","") or sr.get("awb",""),
+        sr.get("tracking",""),
+        o.get("status","active"),
+        o.get("pickup_location",""),
+        o.get("label_downloaded_date",""),
+    ]
+
+SHEET_HEADERS = [
+    "Order#","Date","Name","Phone","City","State","Pincode",
+    "Product","Creative","Total","Courier Paid","Advance",
+    "COD","Payment Status","Vendor","Courier","AWB",
+    "Tracking","Status","Pickup","Label Downloaded"
+]
+
+def _sync_to_sheets(order):
+    try:
+        gc  = get_sheets_client()
+        sid = os.getenv("GOOGLE_SHEET_ID")
+        if not gc or not sid:
+            return
+        sh = gc.open_by_key(sid)
+        try:
+            ws = sh.worksheet("Orders")
+        except Exception:
+            ws = sh.add_worksheet("Orders", rows=2000, cols=25)
+            ws.append_row(SHEET_HEADERS)
+        ws.append_row(_order_to_row(order))
+    except Exception as e:
+        log.error(f"Sheet sync: {e}")
+
+def _sync_update(order):
+    try:
+        gc  = get_sheets_client()
+        sid = os.getenv("GOOGLE_SHEET_ID")
+        if not gc or not sid:
+            return
+        sh   = gc.open_by_key(sid)
+        ws   = sh.worksheet("Orders")
+        cell = ws.find(str(order.get("order_number","")))
+        if not cell:
+            _sync_to_sheets(order)
+            return
+        row = _order_to_row(order)
+        for i, v in enumerate(row, 1):
+            ws.update_cell(cell.row, i, v)
+    except Exception as e:
+        log.error(f"Sheet update: {e}")
