@@ -895,17 +895,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await ask_advance_amount(q, ctx)
         return
 
-    # Advance amount
-    if data.startswith("adv_"):
-        val = data.replace("adv_","")
-        if val == "custom":
-            ud["state"] = "adv_custom_advance"
-            await q.message.reply_text("Enter advance amount:")
-            return
-        await do_mark_advance(q, ctx, int(val))
-        return
-
-    # From search result — start advance
+    # From search result — start advance (must be before adv_)
     if data.startswith("adv_start_"):
         phone = data.replace("adv_start_","")
         o = find_by_phone(phone)
@@ -922,6 +912,16 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"#{o.get('order_number')} — {o.get('customer_name','')}\nCourier paid:",
                 reply_markup=kb
             )
+        return
+
+    # Advance amount
+    if data.startswith("adv_"):
+        val = data.replace("adv_","")
+        if val == "custom":
+            ud["state"] = "adv_custom_advance"
+            await q.message.reply_text("Enter advance amount:")
+            return
+        await do_mark_advance(q, ctx, int(val))
         return
 
     # Rebook confirm
