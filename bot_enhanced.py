@@ -1,4 +1,4 @@
-y"""
+"""
 bot_enhanced.py — Oneboxx Ship Bot (Final)
 """
 
@@ -292,7 +292,7 @@ async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cpo  = ads.get("cpo",0)
     lines = [
         f"📊 *DAILY REPORT — {date.today()}*",
-        f"----------------",
+        f"————————————————",
         f"📦 Orders: {t['total']}",
         f"💰 Advance paid: {t['advance_paid']}",
         f"💵 Full COD: {t['full_cod']}",
@@ -616,7 +616,7 @@ async def do_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: str):
 
         await msg.edit_text(
             f"✅ *Shipment Created!*\n"
-            f"----------------\n"
+            f"————————————————\n"
             f"Order:    #{order_num}\n"
             f"Name:     {d.get('name','')}\n"
             f"Phone:    {d.get('phone','')}\n"
@@ -624,7 +624,7 @@ async def do_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: str):
             f"Product:  {prod_name}\n"
             f"Creative: {d.get('creative','—')}\n"
             f"COD:      ₹{int(cod_amount):,}\n"
-            f"----------------\n"
+            f"————————————————\n"
             f"Courier:  {chosen.get('courier_name','')} {courier_note}\n"
             f"Rate:     ₹{chosen.get('rate',0)}\n"
             f"AWB:      `{awb}`\n"
