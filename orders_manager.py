@@ -1,7 +1,7 @@
 """
 orders_manager.py — Oneboxx Ship Bot (Final v3)
 Changes:
-  - calc_cod uses order total (not hardcoded 3300)
+  - calc_cod uses orders total (not hardcoded 3300)
   - get_label_queue: advance_paid > 0 only, permanent flag
   - get_all_vendors / get_label_queue_by_vendor: uses pickup_location for SR orders
 """
