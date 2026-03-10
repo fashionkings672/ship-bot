@@ -618,8 +618,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "billing_pincode": data.get("pincode", "110001"),
                 "billing_email": "na@example.com",
                 "billing_isd_code": "91",
-                "billing_phone": data.get("phone", ""),
-                "billing_alternate_phone": data.get("alternate phone", ""),
+                "billing_phone": strict_phone(data.get("phone", "")) or "",
+                "billing_alternate_phone": strict_phone(data.get("alternate phone", "")) or "",
                 "shipping_is_billing": True,
                 "order_items": [{
                     "name": data.get("product", ""),
