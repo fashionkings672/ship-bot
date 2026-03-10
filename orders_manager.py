@@ -1,6 +1,9 @@
 """
-orders_manager.py — Oneboxx Ship Bot
-Order database, payment tracking, Google Sheets sync
+orders_manager.py — Oneboxx Ship Bot (Final v3)
+Changes:
+  - calc_cod uses order total (not hardcoded 3300)
+  - get_label_queue: advance_paid > 0 only, permanent flag
+  - get_all_vendors / get_label_queue_by_vendor: uses pickup_location for SR orders
 """
 
 import os
@@ -81,14 +84,10 @@ def update_order_by_id(order_id, **fields):
 
 # ─── PAYMENT ──────────────────────────────
 
-TOTAL_PAYABLE = 3300
-
-def calc_cod(courier_paid, advance_paid):
-    return TOTAL_PAYABLE - int(courier_paid or 0) - int(advance_paid or 0)
-
-def is_standard_preset(courier_paid, advance_paid):
-    c, a = int(courier_paid or 0), int(advance_paid or 0)
-    return (c == 300 and a == 600) or (c == 200 and a == 400)
+def calc_cod(order, courier_paid, advance_paid):
+    """Use order total — not hardcoded 3300."""
+    total = order.get("total", 3300)
+    return int(total) - int(courier_paid or 0) - int(advance_paid or 0)
 
 def payment_status(order):
     c = order.get("courier_paid") or 0
@@ -104,25 +103,24 @@ def payment_status(order):
 # ─── LABEL QUEUE ──────────────────────────
 
 def get_label_queue():
-    today = date.today().isoformat()
+    """Advance paid > 0 only. Permanent flag — never resets."""
     result = []
     for o in load_orders():
         a = o.get("advance_paid")
-        if a is None:
-            continue  # courier only or nothing — not eligible
-        dl = o.get("label_downloaded_date","")
-        if dl and dl >= today:
-            continue  # already downloaded today
+        if a is None or int(a) <= 0:
+            continue
+        if o.get("label_downloaded") is True:
+            continue
         result.append(o)
     return result
 
 def get_label_queue_by_vendor(vendor):
-    vendor = vendor.lower()
+    vendor_lower = vendor.lower()
     result = []
     for o in get_label_queue():
         vm = o.get("manual") or {}
-        v  = vm.get("vendor","shiprocket").lower()
-        if v == vendor or (vendor == "shiprocket" and not vm.get("vendor")):
+        v  = (vm.get("vendor") or o.get("pickup_location") or "shiprocket").lower()
+        if v == vendor_lower:
             result.append(o)
     return result
 
@@ -130,7 +128,7 @@ def get_all_vendors():
     vendors = set()
     for o in load_orders():
         vm = o.get("manual") or {}
-        vendors.add(vm.get("vendor","Shiprocket") or "Shiprocket")
+        vendors.add(vm.get("vendor") or o.get("pickup_location") or "Shiprocket")
     return sorted(vendors)
 
 def mark_label_downloaded(order_id):
@@ -147,20 +145,13 @@ def mark_label_downloaded(order_id):
 # ─── PAYMENT REPORT ───────────────────────
 
 def get_payment_report():
-    pending  = []
-    advance  = []
-    full_cod = []
-    nothing  = []
+    pending = []; advance = []; full_cod = []; nothing = []
     for o in load_orders():
         s = payment_status(o)
-        if s == "courier_only":
-            pending.append(o)
-        elif s == "advance_paid":
-            advance.append(o)
-        elif s == "full_cod":
-            full_cod.append(o)
-        else:
-            nothing.append(o)
+        if s == "courier_only":  pending.append(o)
+        elif s == "advance_paid": advance.append(o)
+        elif s == "full_cod":     full_cod.append(o)
+        else:                     nothing.append(o)
     return {"pending": pending, "advance": advance,
             "full_cod": full_cod, "nothing": nothing}
 
@@ -180,9 +171,9 @@ def set_creative(phone, creative):
     return update_order(phone, creative=creative.upper())
 
 def get_creative_stats(days=7):
-    cutoff  = (date.today() - timedelta(days=days)).isoformat()
-    orders  = [o for o in load_orders() if o.get("created_at","") >= cutoff]
-    stats   = {}
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    orders = [o for o in load_orders() if o.get("created_at","") >= cutoff]
+    stats  = {}
     for o in orders:
         c = o.get("creative") or "—"
         if c not in stats:
@@ -197,14 +188,14 @@ def get_today_stats():
     today  = date.today().isoformat()
     orders = [o for o in load_orders() if o.get("created_at","").startswith(today)]
     return {
-        "total":              len(orders),
-        "advance_paid":       len([o for o in orders if (o.get("advance_paid") or -1) > 0]),
-        "full_cod":           len([o for o in orders if o.get("advance_paid") == 0]),
-        "courier_only":       len([o for o in orders if payment_status(o) == "courier_only"]),
-        "nothing":            len([o for o in orders if payment_status(o) == "nothing"]),
-        "revenue":            sum(o.get("total",0) for o in orders),
-        "advance_collected":  sum((o.get("advance_paid") or 0) for o in orders),
-        "courier_collected":  sum((o.get("courier_paid") or 0) for o in orders),
+        "total":             len(orders),
+        "advance_paid":      len([o for o in orders if (o.get("advance_paid") or -1) > 0]),
+        "full_cod":          len([o for o in orders if o.get("advance_paid") == 0]),
+        "courier_only":      len([o for o in orders if payment_status(o) == "courier_only"]),
+        "nothing":           len([o for o in orders if payment_status(o) == "nothing"]),
+        "revenue":           sum(o.get("total",0) for o in orders),
+        "advance_collected": sum((o.get("advance_paid") or 0) for o in orders),
+        "courier_collected": sum((o.get("courier_paid") or 0) for o in orders),
     }
 
 def get_week_stats():
@@ -265,12 +256,13 @@ def get_today_ads():
 # ─── FORMAT ───────────────────────────────
 
 def format_order(order):
-    sr  = order.get("shiprocket") or {}
-    vm  = order.get("manual") or {}
-    c   = order.get("courier_paid") or 0
-    a   = order.get("advance_paid")
-    cod = order.get("cod_amount", 0)
-    s   = payment_status(order)
+    sr     = order.get("shiprocket") or {}
+    vm     = order.get("manual") or {}
+    c      = order.get("courier_paid") or 0
+    a      = order.get("advance_paid")
+    cod    = order.get("cod_amount", 0)
+    s      = payment_status(order)
+    vendor = vm.get("vendor") or order.get("pickup_location") or "Shiprocket"
 
     if s == "nothing":
         pay = "❌ Nothing paid"
@@ -293,6 +285,7 @@ def format_order(order):
         "",
         f"📦 {order.get('product','')} | ₹{order.get('total',0):,}",
         f"🎨 {order.get('creative','—')}",
+        f"🏪 {vendor}",
         "",
         f"💰 {pay}",
     ]
@@ -301,7 +294,7 @@ def format_order(order):
     if vm.get("awb"):
         lines += ["", f"🏪 {vm.get('vendor','')} | {vm.get('courier','')} | {vm.get('awb','')}"]
     if order.get("label_downloaded_date"):
-        lines.append(f"📥 Downloaded: {order['label_downloaded_date']}")
+        lines.append(f"📥 Label: {order['label_downloaded_date']}")
     lines.append("————————————————————")
     return "\n".join(lines)
 
@@ -331,8 +324,9 @@ def get_sheets_client():
         return None
 
 def _order_to_row(o):
-    sr = o.get("shiprocket") or {}
-    vm = o.get("manual") or {}
+    sr     = o.get("shiprocket") or {}
+    vm     = o.get("manual") or {}
+    vendor = vm.get("vendor") or o.get("pickup_location") or "Shiprocket"
     return [
         o.get("order_number",""),
         o.get("created_at","")[:16].replace("T"," "),
@@ -348,7 +342,7 @@ def _order_to_row(o):
         o.get("advance_paid",""),
         o.get("cod_amount",0),
         payment_status(o),
-        vm.get("vendor","") or "Shiprocket",
+        vendor,
         vm.get("courier","") or sr.get("courier",""),
         vm.get("awb","") or sr.get("awb",""),
         sr.get("tracking",""),
@@ -390,8 +384,7 @@ def _sync_update(order):
         ws   = sh.worksheet("Orders")
         cell = ws.find(str(order.get("order_number","")))
         if not cell:
-            _sync_to_sheets(order)
-            return
+            _sync_to_sheets(order); return
         row = _order_to_row(order)
         for i, v in enumerate(row, 1):
             ws.update_cell(cell.row, i, v)
