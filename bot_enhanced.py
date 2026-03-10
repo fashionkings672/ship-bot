@@ -3,7 +3,7 @@ bot_enhanced.py — Oneboxx Ship Bot (Final v3)
 Confirmed flow changes:
   1. Create Shipment: AI parse → ask creative → ask courier → create
   2. Mark Advance: from Search only, courier pre-filled, Save or Rebook
-  3. Rebook: ask new COD only → cancel old → new shipment
+  3. Rebook: ask new COD onlyy → cancel old → new shipment
   4. Search result: 3 buttons — Advance | Manual AWB | Cancel
   5. Main menu: 6 buttons only
 """
