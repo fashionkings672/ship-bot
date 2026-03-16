@@ -576,7 +576,8 @@ async def do_create_shipment(update_or_q, ctx):
             f"Product: {prod_name} | Creative: {creative or '—'}\n"
             f"COD: ₹{int(cod_amount):,} | Courier: ₹{courier_charged}\n"
             f"Vendor: {pickup_display} | {chosen.get('courier_name','')} {courier_note}\n"
-            f"AWB: `{awb}`",
+            f"AWB: `{awb}`\n"
+            f"Tracking: {tracking}",
             parse_mode="Markdown")
 
         label_url = generate_label(shipment_id)
