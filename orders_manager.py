@@ -1,7 +1,7 @@
 """
 orders_manager.py — Oneboxx Ship Bot (Final v3)
 Changes:
-  - calc_cod uses oorder total (not hardcoded 3300)
+  - calc_cod uses order total (not hardcoded 3300)
   - get_label_queue: advance_paid > 0 only, permanent flag
   - get_all_vendors / get_label_queue_by_vendor: uses pickup_location for SR orders
 """
@@ -495,6 +495,8 @@ def sync_from_sheets():
 
     except Exception as e:
         log.error(f"sync_from_sheets error: {e}", exc_info=True)
+
+def _sync_to_sheets(order):
     try:
         gc  = get_sheets_client()
         sid = os.getenv("GOOGLE_SHEET_ID")
@@ -629,4 +631,3 @@ def push_dashboard_to_sheets():
         return True
     except Exception as e:
         log.error(f"push_dashboard: {e}", exc_info=True)
-        return False
