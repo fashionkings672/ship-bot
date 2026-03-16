@@ -447,7 +447,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Enter number only"); return
         await do_create_shipment(update, ctx); return
 
-        if text == "💰 Bulk Mark Advance":
+    if text == "💰 Bulk Mark Advance":
         ud["bulk_mode"] = "advance"
         ud["state"] = "bulk_input"
         await update.message.reply_text(
