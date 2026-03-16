@@ -7,6 +7,7 @@ Changes:
 """
 
 import os
+import re
 import json
 import logging
 from datetime import datetime, date, timedelta
@@ -36,7 +37,16 @@ def next_order_number():
     if os.path.exists(COUNT_FILE):
         with open(COUNT_FILE) as f:
             data = json.load(f)
-    n = data.get("count", 0) + 1
+    # Always use max of counter and actual max order number in DB
+    orders = load_orders()
+    max_existing = 0
+    for o in orders:
+        try:
+            n = int(o.get("order_number", 0))
+            if n > max_existing: max_existing = n
+        except: pass
+    current = max(data.get("count", 0), max_existing)
+    n = current + 1
     data["count"] = n
     with open(COUNT_FILE, "w") as f:
         json.dump(data, f)
@@ -48,9 +58,16 @@ def save_order(order):
     save_orders(orders)
     _sync_to_sheets(order)
 
+def _norm_phone(phone):
+    """Normalize phone — remove +91, spaces, .0 from float, keep last 10 digits."""
+    p = re.sub(r"[^\d]","", str(phone).strip())
+    if p.startswith("91") and len(p) == 12:
+        p = p[2:]
+    return p[-10:] if len(p) >= 10 else p
+
 def find_by_phone(phone):
-    phone = str(phone).strip()
-    matches = [o for o in load_orders() if str(o.get("phone","")).strip() == phone]
+    phone = _norm_phone(phone)
+    matches = [o for o in load_orders() if _norm_phone(o.get("phone","")) == phone]
     return matches[-1] if matches else None
 
 def find_by_awb(awb):
@@ -453,11 +470,17 @@ def sync_from_sheets():
             status  = str(row.get("Status","active")).strip()
             label_dl= str(row.get("Label Downloaded","")).strip()
 
+            # Clean phone from sheet
+            raw_phone = re.sub(r"[^\d]","", str(row.get("Phone","") or "").strip())
+            if raw_phone.startswith("91") and len(raw_phone) == 12:
+                raw_phone = raw_phone[2:]
+            clean_phone = raw_phone[-10:] if len(raw_phone) >= 10 else raw_phone
+
             order = {
                 "order_id":        f"SHEET_{num}",
                 "order_number":    order_num,
                 "created_at":      str(row.get("Date","")).replace(" ","T"),
-                "phone":           str(row.get("Phone","")).strip(),
+                "phone":           clean_phone,
                 "customer_name":   str(row.get("Name","")).strip(),
                 "address":         "",
                 "city":            str(row.get("City","")).strip(),
@@ -508,7 +531,15 @@ def _sync_to_sheets(order):
         except Exception:
             ws = sh.add_worksheet("Orders", rows=2000, cols=25)
             ws.append_row(SHEET_HEADERS)
-        ws.append_row(_order_to_row(order))
+        # Check for duplicate before appending
+        col_a     = ws.col_values(1)
+        order_num = str(order.get("order_number",""))
+        if order_num in col_a:
+            # Already exists — update instead
+            row_idx = col_a.index(order_num) + 1
+            ws.update(f"A{row_idx}", [_order_to_row(order)])
+        else:
+            ws.append_row(_order_to_row(order))
     except Exception as e:
         log.error(f"Sheet sync: {e}")
 
@@ -518,14 +549,15 @@ def _sync_update(order):
         sid = os.getenv("GOOGLE_SHEET_ID")
         if not gc or not sid:
             return
-        sh   = gc.open_by_key(sid)
-        ws   = sh.worksheet("Orders")
-        cell = ws.find(str(order.get("order_number","")))
-        if not cell:
-            _sync_to_sheets(order); return
-        row = _order_to_row(order)
-        for i, v in enumerate(row, 1):
-            ws.update_cell(cell.row, i, v)
+        sh      = gc.open_by_key(sid)
+        ws      = sh.worksheet("Orders")
+        col_a   = ws.col_values(1)
+        order_num = str(order.get("order_number",""))
+        if order_num in col_a:
+            row_idx = col_a.index(order_num) + 1
+            ws.update(f"A{row_idx}", [_order_to_row(order)])
+        else:
+            _sync_to_sheets(order)
     except Exception as e:
         log.error(f"Sheet update: {e}")
 
@@ -631,3 +663,4 @@ def push_dashboard_to_sheets():
         return True
     except Exception as e:
         log.error(f"push_dashboard: {e}", exc_info=True)
+        return False
