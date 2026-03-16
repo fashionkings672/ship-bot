@@ -1,5 +1,12 @@
 """
 bot_enhanced.py — Oneboxx Ship Bot Final
+Changes:
+- State auto-fill from pincode if missing
+- Bulk rebook: direct execute if all found, confirm only if some missing
+- Duplicate customer check on create shipment
+- Monthly sheet tabs
+- Order counter from sheet max
+- Phone number normalization
 """
 import os, re, json, uuid, time, logging, asyncio, aiohttp, io
 import requests
@@ -133,6 +140,19 @@ def cancel_sr_order(sr_order_id):
         return False, str(resp)
     except Exception as e: return False, str(e)
 
+def get_real_sr_order_id(o):
+    sr = o.get("shiprocket") or {}
+    sr_order_id = sr.get("order_id","") or sr.get("shipment_id","")
+    if not sr_order_id:
+        awb = sr.get("awb","")
+        if awb:
+            try:
+                ensure_token()
+                r = sr_get(f"/orders/show/{awb}")
+                sr_order_id = str(r.get("data",{}).get("id","") or "")
+            except: pass
+    return sr_order_id
+
 def get_available_couriers_for_order(order):
     pickup_obj = resolve_pickup(order.get("pickup_location",""))
     if not pickup_obj: return []
@@ -143,9 +163,10 @@ def get_available_couriers_for_order(order):
     return get_couriers(pickup_pin, delivery_pin, prod["weight"], True)
 
 def do_rebook_shipment(o, new_cod):
-    """Cancel old and rebook with new_cod. Returns (ok, awb_or_err, shipment_id)"""
-    sr = o.get("shiprocket") or {}
-    ok, err = cancel_sr_order(sr.get("order_id","") or sr.get("shipment_id",""))
+    sr_order_id = get_real_sr_order_id(o)
+    if not sr_order_id:
+        return False, "No Shiprocket order ID — cancel manually", None
+    ok, err = cancel_sr_order(sr_order_id)
     if not ok: return False, err, None
 
     products  = json.load(open(PRODUCTS_FILE)) if os.path.exists(PRODUCTS_FILE) else {}
@@ -215,10 +236,15 @@ Product: <product_name>
 Name: <full_name>
 Address: <street>
 City: <city>
-State: <state>
+State: <state — if not mentioned derive from pincode>
 Pincode: <6digit>
 Phone: <10digit>
 COD: <amount_number_only>
+
+Rules:
+- If State is not mentioned, derive it from the Pincode automatically.
+- Phone must be exactly 10 digits (remove +91 or 91 prefix if present).
+- COD must be number only, no ₹ symbol.
 
 Text:
 {text}"""
@@ -353,7 +379,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     log.info(f"MSG: '{text}' | state: '{state}'")
 
-    # ── Main menu ──
     if text == "➕ Create Shipment":
         ud.clear(); ud["state"] = "create"
         await update.message.reply_text("Send order details:", reply_markup=MAIN_KB); return
@@ -378,7 +403,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ud.clear(); ud["state"] = "bulk_menu_open"
         await update.message.reply_text("⚡ *Bulk Actions* — choose:", parse_mode="Markdown", reply_markup=BULK_KB); return
 
-    # ── Bulk sub-menu ──
     if text == "💰 Mark Advance":
         ud["bulk_mode"] = "advance"
         ud["state"]     = "bulk_input"
@@ -397,7 +421,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ud.clear()
         await update.message.reply_text("Main menu:", reply_markup=MAIN_KB); return
 
-    # ── State machine — bulk_input FIRST ──
+    # ── State machine ──
     if state == "bulk_input":
         await do_bulk_parse(update, ctx, text); return
 
@@ -473,11 +497,32 @@ async def do_create(update, ctx, text):
         if not d.get("phone") or not d.get("pincode"):
             await msg.edit_text("❌ Missing phone or pincode.\n\nFormat:\nName\nPhone\nAddress, City\nPincode\nProduct\nCOD amount")
             ctx.user_data.clear(); return
+
+        # Duplicate check
+        existing = find_by_phone(d.get("phone",""))
+        if existing:
+            ctx.user_data["create_parsed"] = d
+            ctx.user_data["state"] = "create_dup_check"
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Create new order", callback_data="dup_yes"),
+                InlineKeyboardButton("❌ Cancel",           callback_data="dup_no"),
+            ]])
+            await msg.edit_text(
+                f"⚠️ *Existing order found!*\n"
+                f"#{existing.get('order_number')} {existing.get('customer_name','')}\n"
+                f"📅 {str(existing.get('created_at',''))[:10]}\n"
+                f"COD: ₹{int(existing.get('cod_amount',0)):,} | Status: {existing.get('status','')}\n"
+                f"AWB: {(existing.get('shiprocket') or {}).get('awb','—')}\n\n"
+                f"Create new order anyway?",
+                parse_mode="Markdown", reply_markup=kb)
+            return
+
         ctx.user_data["create_parsed"] = d
         ctx.user_data["state"] = "create_creative"
         await msg.edit_text(
             f"✅ Parsed:\nName: {d.get('name','')}\nPhone: {d.get('phone','')}\n"
-            f"City: {d.get('city','')}, {d.get('pincode','')}\nProduct: {d.get('product','')}\n"
+            f"City: {d.get('city','')}, {d.get('pincode','')}\n"
+            f"State: {d.get('state','')}\nProduct: {d.get('product','')}\n"
             f"COD: ₹{d.get('cod','')}\n\nEnter creative code:")
     except Exception as e:
         await msg.edit_text(f"❌ Error: {e}"); ctx.user_data.clear()
@@ -573,6 +618,7 @@ async def do_create_shipment(update_or_q, ctx):
             f"✅ *Shipment Created!*\n"
             f"Order: #{order_num} | {d.get('name','')} | {d.get('phone','')}\n"
             f"City: {d.get('city','')}, {delivery_pin}\n"
+            f"State: {d.get('state','Karnataka')}\n"
             f"Product: {prod_name} | Creative: {creative or '—'}\n"
             f"COD: ₹{int(cod_amount):,} | Courier: ₹{courier_charged}\n"
             f"Vendor: {pickup_display} | {chosen.get('courier_name','')} {courier_note}\n"
@@ -694,6 +740,7 @@ async def do_bulk_parse(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: st
         await update.message.reply_text(f"❌ No orders found:\n{miss_txt}\n\nCheck and resend."); return
 
     if mode == "advance":
+        # Advance — always show confirm
         found_list = "\n".join(
             f"#{o.get('order_number')} {o.get('customer_name','')} | {o.get('phone','')}"
             for o in found)
@@ -704,27 +751,43 @@ async def do_bulk_parse(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: st
         msg = f"💰 Mark ₹{amount} advance on {len(found)} orders?\n\n{found_list}"
         if miss_txt: msg += f"\n\n⚠️ Not found:\n{miss_txt}"
         await update.message.reply_text(msg, reply_markup=kb)
+
     else:
+        # Rebook — show order details
         order_lines = []
         for o in found:
             sr = o.get("shiprocket") or {}
             order_lines.append(
                 f"#{o.get('order_number')} {o.get('customer_name','')} | "
                 f"{o.get('phone','')} | {sr.get('courier','—')} | COD: ₹{int(o.get('cod_amount',0)):,}")
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton(f"✅ Rebook {len(found)} at ₹{amount:,}", callback_data="bulk_confirm_go"),
-            InlineKeyboardButton("❌ Cancel", callback_data="bulk_cancel"),
-        ]])
-        msg = f"🔄 Cancel + Rebook {len(found)} orders\nNew COD: ₹{amount:,}\n\n" + "\n".join(order_lines)
+        msg = f"🔄 Cancel + Rebook {len(found)} orders at ₹{amount:,}\n\n" + "\n".join(order_lines)
         if miss_txt: msg += f"\n\n⚠️ Not found:\n{miss_txt}"
-        await update.message.reply_text(msg, reply_markup=kb)
 
-async def do_bulk_execute(q, ctx: ContextTypes.DEFAULT_TYPE):
+        if missing:
+            # Some missing — show confirm button
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"✅ Continue with {len(found)}", callback_data="bulk_confirm_go"),
+                InlineKeyboardButton("❌ Cancel", callback_data="bulk_cancel"),
+            ]])
+            await update.message.reply_text(msg, reply_markup=kb)
+        else:
+            # All found — execute directly
+            await update.message.reply_text(msg)
+            await do_bulk_execute(update, ctx)
+
+async def do_bulk_execute(update_or_q, ctx: ContextTypes.DEFAULT_TYPE):
     ud     = ctx.user_data
     mode   = ud.get("bulk_mode", "advance")
     found  = ud.get("bulk_found", [])
     amount = ud.get("bulk_amount", 0)
-    reply  = q.message if hasattr(q, "message") and q.message else q.callback_query.message
+
+    # Handle both message and callback query
+    if hasattr(update_or_q, "callback_query") and update_or_q.callback_query:
+        reply = update_or_q.callback_query.message
+    elif hasattr(update_or_q, "message") and update_or_q.message:
+        reply = update_or_q.message
+    else:
+        reply = update_or_q
 
     if mode == "advance":
         await reply.reply_text(f"⏳ Marking ₹{amount} on {len(found)} orders...")
@@ -886,7 +949,13 @@ async def do_add_product(update, ctx, text):
 async def do_reassign_courier(update, ctx, chosen_courier):
     ud = ctx.user_data; o = ud.get("reassign_order"); sr = o.get("shiprocket") or {}
     await update.message.reply_text(f"⏳ Reassigning to {chosen_courier.get('courier_name','')}...")
-    ok, err = cancel_sr_order(sr.get("order_id","") or sr.get("shipment_id",""))
+
+    sr_order_id = get_real_sr_order_id(o)
+    if not sr_order_id:
+        await update.message.reply_text("❌ No Shiprocket order ID — cancel manually", reply_markup=MAIN_KB)
+        ud.clear(); return
+
+    ok, err = cancel_sr_order(sr_order_id)
     if not ok:
         await update.message.reply_text(f"❌ Cancel failed: {err}", reply_markup=MAIN_KB); ud.clear(); return
 
@@ -956,6 +1025,20 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     data = q.data or ""
     ud   = ctx.user_data
 
+    # Duplicate check — proceed or cancel
+    if data == "dup_yes":
+        ud["state"] = "create_creative"
+        d = ud.get("create_parsed",{})
+        await q.message.reply_text(
+            f"✅ Parsed:\nName: {d.get('name','')}\nPhone: {d.get('phone','')}\n"
+            f"City: {d.get('city','')}, {d.get('pincode','')}\n"
+            f"State: {d.get('state','')}\nProduct: {d.get('product','')}\n"
+            f"COD: ₹{d.get('cod','')}\n\nEnter creative code:")
+        return
+
+    if data == "dup_no":
+        await q.message.reply_text("Cancelled", reply_markup=MAIN_KB); ud.clear(); return
+
     if data.startswith("create_cour_"):
         val = data.replace("create_cour_","")
         if val == "custom":
@@ -992,10 +1075,13 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         orders = load_orders()
         o = next((x for x in orders if x.get("order_id")==order_id), None)
         if o:
-            sr = o.get("shiprocket") or {}
-            ok, msg = cancel_sr_order(sr.get("order_id","") or sr.get("shipment_id",""))
-            if ok: update_order_by_id(order_id, status="cancelled")
-            await q.message.reply_text(f"{'✅ Cancelled' if ok else '❌ '+msg} #{o.get('order_number')}", reply_markup=MAIN_KB)
+            sr_order_id = get_real_sr_order_id(o)
+            if sr_order_id:
+                ok, msg = cancel_sr_order(sr_order_id)
+                if ok: update_order_by_id(order_id, status="cancelled")
+                await q.message.reply_text(f"{'✅ Cancelled' if ok else '❌ '+msg} #{o.get('order_number')}", reply_markup=MAIN_KB)
+            else:
+                await q.message.reply_text("❌ No Shiprocket order ID", reply_markup=MAIN_KB)
         return
 
     if data.startswith("action_reassign_"):
@@ -1031,8 +1117,8 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "manual_cancel_yes":
-        o = ud.get("manual_order",{}); sr = o.get("shiprocket") or {}
-        cancel_sr_order(sr.get("order_id","") or sr.get("shipment_id",""))
+        o = ud.get("manual_order",{}); sr_order_id = get_real_sr_order_id(o)
+        if sr_order_id: cancel_sr_order(sr_order_id)
         ud["state"] = "manual_vendor"
         await q.message.reply_text("✅ Cancelled\n\nEnter vendor name:"); return
 
@@ -1071,7 +1157,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text("\n".join(lines)); return
 
     if data == "bulk_confirm_go":
-        await do_bulk_execute(q, ctx); return
+        await do_bulk_execute(update, ctx); return
 
     if data == "bulk_cancel":
         await q.message.reply_text("Cancelled", reply_markup=MAIN_KB); ud.clear(); return
