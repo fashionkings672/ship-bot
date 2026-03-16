@@ -401,6 +401,9 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Main menu:", reply_markup=MAIN_KB)
         return
 
+    if state == "bulk_input":
+        await do_bulk_parse(update, ctx, text); return
+
     if state == "create":
         await do_create(update, ctx, text); return
 
@@ -439,9 +442,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Enter number only"); return
         await do_rebook_new_cod(update, ctx, new_cod); return
 
-    if state == "bulk_input":
-        await do_bulk_parse(update, ctx, text); return
-
     if state == "manual_vendor":
         ud["manual_vendor"] = text
         ud["state"] = "manual_courier"
@@ -479,7 +479,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text("Use the buttons ⬇️", reply_markup=MAIN_KB)
-
 # ─── CREATE — STEP 1 ──────────────────────
 
 async def do_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: str):
