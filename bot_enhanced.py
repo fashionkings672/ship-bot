@@ -370,7 +370,10 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if action == "pay_report":    await show_payment_report(update, ctx); return
         if action == "creative_menu": await show_creative_menu(update, ctx); return
         if action == "products":      await show_products(update, ctx); return
-        if action == "bulk_menu":     await show_bulk_menu(update, ctx); return
+        if action == "bulk_menu":
+            ud["state"] = "bulk_menu_open"
+            await update.message.reply_text("⚡ Bulk Actions — choose:", reply_markup=BULK_KB)
+            return
         # create / search — set state and prompt
         ud["state"] = action
         await update.message.reply_text(
@@ -443,6 +446,27 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except:
             await update.message.reply_text("Enter number only"); return
         await do_create_shipment(update, ctx); return
+
+        if text == "💰 Bulk Mark Advance":
+        ud["bulk_mode"] = "advance"
+        ud["state"] = "bulk_input"
+        await update.message.reply_text(
+            "💰 Send numbers + advance amount last line:\n\n9845123456\n9876543210\n600",
+            reply_markup=BULK_KB)
+        return
+
+    if text == "🔄 Bulk Rebook COD":
+        ud["bulk_mode"] = "rebook"
+        ud["state"] = "bulk_input"
+        await update.message.reply_text(
+            "🔄 Send numbers + new COD last line:\n\n9845123456\n9876543210\n3000",
+            reply_markup=BULK_KB)
+        return
+
+    if text == "🔙 Back":
+        ud.clear()
+        await update.message.reply_text("Main menu:", reply_markup=MAIN_KB)
+        return
 
     if state == "search":
         await do_search(update, ctx, text); return
