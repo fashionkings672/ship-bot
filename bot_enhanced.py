@@ -346,7 +346,6 @@ async def cmd_setcreative(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Order not found")
     else:
         await update.message.reply_text("Usage: /setcreative <phone> <code>")
-
 # ─── MESSAGE HANDLER ──────────────────────
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -374,7 +373,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ud["state"] = "bulk_menu_open"
             await update.message.reply_text("⚡ Bulk Actions — choose:", reply_markup=BULK_KB)
             return
-        # create / search — set state and prompt
         ud["state"] = action
         await update.message.reply_text(
             "Send order details:" if action == "create" else "Enter phone or AWB:",
@@ -382,46 +380,26 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Bulk sub-menu buttons
     if text == "💰 Bulk Mark Advance":
-        ctx.user_data["bulk_mode"] = "advance"
-        ctx.user_data["state"]     = "bulk_input"
+        ud["bulk_mode"] = "advance"
+        ud["state"]     = "bulk_input"
         await update.message.reply_text(
-            "💰 *Bulk Mark Advance*\n\n"
-            "Send phone numbers + advance amount on last line:\n\n"
-            "9845123456\n9876543210\n8765432109\n600",
-            parse_mode="Markdown",
-            reply_markup=BULK_KB
-        )
+            "💰 Send numbers + advance amount last line:\n\n9845123456\n9876543210\n600",
+            reply_markup=BULK_KB)
         return
 
     if text == "🔄 Bulk Rebook COD":
-        ctx.user_data["bulk_mode"] = "rebook"
-        ctx.user_data["state"]     = "bulk_input"
+        ud["bulk_mode"] = "rebook"
+        ud["state"]     = "bulk_input"
         await update.message.reply_text(
-            "🔄 *Bulk Rebook COD*\n\n"
-            "Send phone numbers + new COD on last line:\n\n"
-            "9845123456\n9876543210\n8765432109\n3000",
-            parse_mode="Markdown",
-            reply_markup=BULK_KB
-        )
+            "🔄 Send numbers + new COD last line:\n\n9845123456\n9876543210\n3000",
+            reply_markup=BULK_KB)
         return
 
     if text == "🔙 Back":
-        ctx.user_data.clear()
+        ud.clear()
         await update.message.reply_text("Main menu:", reply_markup=MAIN_KB)
         return
-
-    if text not in routes and state not in ("create","search","create_creative",
-        "create_courier_custom","adv_custom","adv_new_cod","manual_vendor",
-        "manual_courier","manual_awb","prod_add","reassign_select","bulk_input"):
-        ud["state"] = action if text in routes else state
-        if text in ("➕ Create Shipment","🔍 Search Order"):
-            await update.message.reply_text(
-                "Send order details:" if action == "create" else "Enter phone or AWB:",
-                reply_markup=MAIN_KB
-            )
-            return
 
     if state == "create":
         await do_create(update, ctx, text); return
@@ -437,8 +415,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ]])
         await update.message.reply_text(
             f"Creative: {ud['create_creative'] or '—'} ✅\n\nCourier amount charged?",
-            reply_markup=kb
-        )
+            reply_markup=kb)
         return
 
     if state == "create_courier_custom":
@@ -446,27 +423,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except:
             await update.message.reply_text("Enter number only"); return
         await do_create_shipment(update, ctx); return
-
-    if text == "💰 Bulk Mark Advance":
-        ud["bulk_mode"] = "advance"
-        ud["state"] = "bulk_input"
-        await update.message.reply_text(
-            "💰 Send numbers + advance amount last line:\n\n9845123456\n9876543210\n600",
-            reply_markup=BULK_KB)
-        return
-
-    if text == "🔄 Bulk Rebook COD":
-        ud["bulk_mode"] = "rebook"
-        ud["state"] = "bulk_input"
-        await update.message.reply_text(
-            "🔄 Send numbers + new COD last line:\n\n9845123456\n9876543210\n3000",
-            reply_markup=BULK_KB)
-        return
-
-    if text == "🔙 Back":
-        ud.clear()
-        await update.message.reply_text("Main menu:", reply_markup=MAIN_KB)
-        return
 
     if state == "search":
         await do_search(update, ctx, text); return
@@ -482,6 +438,9 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except:
             await update.message.reply_text("Enter number only"); return
         await do_rebook_new_cod(update, ctx, new_cod); return
+
+    if state == "bulk_input":
+        await do_bulk_parse(update, ctx, text); return
 
     if state == "manual_vendor":
         ud["manual_vendor"] = text
@@ -500,17 +459,13 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         o = update_order(phone,
             manual={"vendor": vendor, "courier": courier, "awb": text,
                     "added_at": datetime.now().isoformat()},
-            status="manual"
-        )
+            status="manual")
         msg = f"✅ Manual saved\nVendor: {vendor}\nCourier: {courier}\nAWB: {text}" if o else "❌ Failed"
         await update.message.reply_text(msg, reply_markup=MAIN_KB)
         ud.clear(); return
 
     if state == "prod_add":
         await do_add_product(update, ctx, text); return
-
-    if state == "bulk_input":
-        await do_bulk_parse(update, ctx, text); return
 
     if state == "reassign_select":
         try:
