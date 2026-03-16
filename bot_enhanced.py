@@ -218,6 +218,12 @@ MAIN_KB = ReplyKeyboardMarkup([
     ["⚡ Bulk Actions"],
 ], resize_keyboard=True)
 
+BULK_KB = ReplyKeyboardMarkup([
+    ["💰 Bulk Mark Advance"],
+    ["🔄 Bulk Rebook COD"],
+    ["🔙 Back"],
+], resize_keyboard=True)
+
 def order_action_kb(order_id, phone):
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("💰 Advance",    callback_data=f"adv_start_{phone}"),
@@ -365,6 +371,13 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if action == "creative_menu": await show_creative_menu(update, ctx); return
         if action == "products":      await show_products(update, ctx); return
         if action == "bulk_menu":     await show_bulk_menu(update, ctx); return
+        # create / search — set state and prompt
+        ud["state"] = action
+        await update.message.reply_text(
+            "Send order details:" if action == "create" else "Enter phone or AWB:",
+            reply_markup=MAIN_KB
+        )
+        return
 
     # Bulk sub-menu buttons
     if text == "💰 Bulk Mark Advance":
@@ -395,12 +408,17 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data.clear()
         await update.message.reply_text("Main menu:", reply_markup=MAIN_KB)
         return
-        ud["state"] = action
-        await update.message.reply_text(
-            "Send order details:" if action == "create" else "Enter phone or AWB:",
-            reply_markup=MAIN_KB
-        )
-        return
+
+    if text not in routes and state not in ("create","search","create_creative",
+        "create_courier_custom","adv_custom","adv_new_cod","manual_vendor",
+        "manual_courier","manual_awb","prod_add","reassign_select","bulk_input"):
+        ud["state"] = action if text in routes else state
+        if text in ("➕ Create Shipment","🔍 Search Order"):
+            await update.message.reply_text(
+                "Send order details:" if action == "create" else "Enter phone or AWB:",
+                reply_markup=MAIN_KB
+            )
+            return
 
     if state == "create":
         await do_create(update, ctx, text); return
@@ -1305,12 +1323,6 @@ if __name__ == "__main__":
     asyncio.run(main())
 
 # ─── BULK ACTIONS ─────────────────────────
-
-BULK_KB = ReplyKeyboardMarkup([
-    ["💰 Bulk Mark Advance"],
-    ["🔄 Bulk Rebook COD"],
-    ["🔙 Back"],
-], resize_keyboard=True)
 
 async def show_bulk_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["state"] = "bulk_menu_open"
