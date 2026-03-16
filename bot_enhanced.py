@@ -215,7 +215,7 @@ MAIN_KB = ReplyKeyboardMarkup([
     ["➕ Create Shipment", "🔍 Search Order"],
     ["📥 Download Labels", "📊 Payment Report"],
     ["🎨 Creative",        "📦 Products"],
-    ["⚡ Bulk Actions",    "📈 Dashboard"],
+    ["⚡ Bulk Actions"],
 ], resize_keyboard=True)
 
 def order_action_kb(order_id, phone):
@@ -356,7 +356,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "🎨 Creative":        "creative_menu",
         "📦 Products":        "products",
         "⚡ Bulk Actions":    "bulk_menu",
-        "📈 Dashboard":       "dashboard",
     }
     if text in routes:
         ud.clear()
@@ -366,7 +365,36 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if action == "creative_menu": await show_creative_menu(update, ctx); return
         if action == "products":      await show_products(update, ctx); return
         if action == "bulk_menu":     await show_bulk_menu(update, ctx); return
-        if action == "dashboard":     await show_dashboard(update, ctx); return
+
+    # Bulk sub-menu buttons
+    if text == "💰 Bulk Mark Advance":
+        ctx.user_data["bulk_mode"] = "advance"
+        ctx.user_data["state"]     = "bulk_input"
+        await update.message.reply_text(
+            "💰 *Bulk Mark Advance*\n\n"
+            "Send phone numbers + advance amount on last line:\n\n"
+            "9845123456\n9876543210\n8765432109\n600",
+            parse_mode="Markdown",
+            reply_markup=BULK_KB
+        )
+        return
+
+    if text == "🔄 Bulk Rebook COD":
+        ctx.user_data["bulk_mode"] = "rebook"
+        ctx.user_data["state"]     = "bulk_input"
+        await update.message.reply_text(
+            "🔄 *Bulk Rebook COD*\n\n"
+            "Send phone numbers + new COD on last line:\n\n"
+            "9845123456\n9876543210\n8765432109\n3000",
+            parse_mode="Markdown",
+            reply_markup=BULK_KB
+        )
+        return
+
+    if text == "🔙 Back":
+        ctx.user_data.clear()
+        await update.message.reply_text("Main menu:", reply_markup=MAIN_KB)
+        return
         ud["state"] = action
         await update.message.reply_text(
             "Send order details:" if action == "create" else "Enter phone or AWB:",
@@ -1229,6 +1257,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "bulk_continue":
         await do_bulk_execute(q, ctx); return
 
+    if data == "bulk_confirm_go":
+        await do_bulk_execute(q, ctx); return
+
     if data == "bulk_cancel":
         await q.message.reply_text("Cancelled", reply_markup=MAIN_KB)
         ctx.user_data.clear(); return
@@ -1275,18 +1306,18 @@ if __name__ == "__main__":
 
 # ─── BULK ACTIONS ─────────────────────────
 
+BULK_KB = ReplyKeyboardMarkup([
+    ["💰 Bulk Mark Advance"],
+    ["🔄 Bulk Rebook COD"],
+    ["🔙 Back"],
+], resize_keyboard=True)
+
 async def show_bulk_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("💰 Bulk Mark Advance", callback_data="bulk_advance"),
-        InlineKeyboardButton("🔄 Bulk Rebook COD",   callback_data="bulk_rebook"),
-    ]])
+    ctx.user_data["state"] = "bulk_menu_open"
     await update.message.reply_text(
-        "⚡ *Bulk Actions*\n\n"
-        "Send phone numbers + amount (last line)\n\n"
-        "Example advance:\n`9845123456\n9876543210\n600`\n\n"
-        "Example rebook:\n`9845123456\n9876543210\n3000`",
+        "⚡ *Bulk Actions* — choose:",
         parse_mode="Markdown",
-        reply_markup=kb
+        reply_markup=BULK_KB
     )
 
 async def do_bulk_parse(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: str):
@@ -1337,7 +1368,7 @@ async def do_bulk_parse(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: st
         ud["state"]        = "bulk_confirm_partial"
 
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Continue with found", callback_data="bulk_continue"),
+            InlineKeyboardButton("✅ Continue with found", callback_data="bulk_confirm_go"),
             InlineKeyboardButton("❌ Cancel",               callback_data="bulk_cancel"),
         ]])
         await update.message.reply_text(
@@ -1349,10 +1380,34 @@ async def do_bulk_parse(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: st
         )
         return
 
-    # All found — store and confirm
+    # All found — store and show confirm
     ud["bulk_found"]  = found
     ud["bulk_amount"] = amount
-    await do_bulk_execute(update, ctx)
+
+    mode = ud.get("bulk_mode","advance")
+    found_list = "\n".join(
+        f"#{o.get('order_number')} {o.get('customer_name','')} | {o.get('phone','')}"
+        for o in found
+    )
+
+    if mode == "advance":
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"✅ Mark ₹{amount} on all {len(found)}", callback_data="bulk_confirm_go"),
+            InlineKeyboardButton("❌ Cancel", callback_data="bulk_cancel"),
+        ]])
+        await update.message.reply_text(
+            f"💰 Mark ₹{amount} advance on {len(found)} orders?\n\n{found_list}",
+            reply_markup=kb
+        )
+    else:
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"✅ Rebook all {len(found)} at ₹{amount}", callback_data="bulk_confirm_go"),
+            InlineKeyboardButton("❌ Cancel", callback_data="bulk_cancel"),
+        ]])
+        await update.message.reply_text(
+            f"🔄 Cancel + rebook {len(found)} orders at COD ₹{amount:,}?\n\n{found_list}",
+            reply_markup=kb
+        )
 
 async def do_bulk_execute(update_or_q, ctx: ContextTypes.DEFAULT_TYPE):
     """Execute bulk action on all found orders."""
