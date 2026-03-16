@@ -3,7 +3,7 @@ bot_enhanced.py — Oneboxx Ship Bot (Final v3)
 Confirmed flow changes:
   1. Create Shipment: AI parse → ask creative → ask courier → create
   2. Mark Advance: from Search only, courier pre-filled, Save or Rebook
-  3. Rebook: ask new COD onlyy → cancel old → new shipment
+  3. Rebook: ask new COD only → cancel old → new shipment
   4. Search result: 3 buttons — Advance | Manual AWB | Cancel
   5. Main menu: 6 buttons only
 """
@@ -24,10 +24,12 @@ import openai
 from orders_manager import (
     save_order, find_by_phone, find_by_awb, update_order, update_order_by_id,
     next_order_number, calc_cod, payment_status,
-    get_label_queue, get_label_queue_by_vendor, get_all_vendors, mark_label_downloaded,
+    get_label_queue, get_all_label_vendors, get_products_for_vendor,
+    get_label_queue_by_vendor_product, get_label_counts, mark_label_downloaded,
     get_payment_report, get_missing_creative, set_creative,
     get_today_stats, get_week_stats, log_adsspend, log_campaign_orders, get_today_ads,
-    format_order, load_orders, save_orders
+    format_order, load_orders, save_orders, sync_from_sheets,
+    push_dashboard_to_sheets
 )
 
 # ─── CONFIG ───────────────────────────────
@@ -213,6 +215,7 @@ MAIN_KB = ReplyKeyboardMarkup([
     ["➕ Create Shipment", "🔍 Search Order"],
     ["📥 Download Labels", "📊 Payment Report"],
     ["🎨 Creative",        "📦 Products"],
+    ["⚡ Bulk Actions",    "📈 Dashboard"],
 ], resize_keyboard=True)
 
 def order_action_kb(order_id, phone):
@@ -352,6 +355,8 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "📊 Payment Report":  "pay_report",
         "🎨 Creative":        "creative_menu",
         "📦 Products":        "products",
+        "⚡ Bulk Actions":    "bulk_menu",
+        "📈 Dashboard":       "dashboard",
     }
     if text in routes:
         ud.clear()
@@ -360,6 +365,8 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if action == "pay_report":    await show_payment_report(update, ctx); return
         if action == "creative_menu": await show_creative_menu(update, ctx); return
         if action == "products":      await show_products(update, ctx); return
+        if action == "bulk_menu":     await show_bulk_menu(update, ctx); return
+        if action == "dashboard":     await show_dashboard(update, ctx); return
         ud["state"] = action
         await update.message.reply_text(
             "Send order details:" if action == "create" else "Enter phone or AWB:",
@@ -431,6 +438,9 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if state == "prod_add":
         await do_add_product(update, ctx, text); return
+
+    if state == "bulk_input":
+        await do_bulk_parse(update, ctx, text); return
 
     if state == "reassign_select":
         try:
@@ -889,32 +899,58 @@ async def do_reassign_courier(update: Update, ctx: ContextTypes.DEFAULT_TYPE, ch
 # ─── LABELS ───────────────────────────────
 
 async def show_label_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    queue = get_label_queue()
-    if not queue:
-        await update.message.reply_text("📥 No labels pending", reply_markup=MAIN_KB); return
-
-    vendor_counts = {}
-    for o in queue:
-        vm = o.get("manual") or {}
-        v  = vm.get("vendor") or o.get("pickup_location") or "Shiprocket"
-        vendor_counts[v] = vendor_counts.get(v, 0) + 1
-
-    kb_rows = [[InlineKeyboardButton(f"📥 All ({len(queue)})", callback_data="label_all")]]
-    for v, count in sorted(vendor_counts.items()):
-        kb_rows.append([InlineKeyboardButton(f"🏪 {v} ({count})", callback_data=f"label_vendor_{v}")])
-
-    lines = [f"📥 *Download Labels*\n{len(queue)} pending\n"]
-    for v, count in sorted(vendor_counts.items()):
-        lines.append(f"  {v}: {count}")
-
+    """Level 1 — show vendors."""
+    vendors = get_all_label_vendors()
+    if not vendors:
+        await update.message.reply_text("📥 No labels pending", reply_markup=MAIN_KB)
+        return
+    kb_rows = []
+    for v in vendors:
+        products = get_products_for_vendor(v)
+        total = sum(get_label_counts(v, p)[0] for p in products)
+        kb_rows.append([InlineKeyboardButton(
+            f"🏪 {v} ({total})", callback_data=f"lv1_{v}"
+        )])
     await update.message.reply_text(
-        "\n".join(lines), parse_mode="Markdown",
+        "📥 *Download Labels*\nSelect vendor:",
+        parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(kb_rows)
+    )
+
+async def show_label_products(q, vendor):
+    """Level 2 — show products for vendor."""
+    products = get_products_for_vendor(vendor)
+    if not products:
+        await q.message.reply_text("No labels for this vendor")
+        return
+    kb_rows = []
+    for p in products:
+        total, adv = get_label_counts(vendor, p)
+        kb_rows.append([InlineKeyboardButton(
+            f"📦 {p} ({total})", callback_data=f"lv2_{vendor}|{p}"
+        )])
+    await q.message.reply_text(
+        f"🏪 *{vendor}* — Select product:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(kb_rows)
+    )
+
+async def show_label_filter(q, vendor, product):
+    """Level 3 — All or Advance Paid."""
+    total, adv = get_label_counts(vendor, product)
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"📥 All ({total})",          callback_data=f"lv3_{vendor}|{product}|all"),
+        InlineKeyboardButton(f"💰 Advance Paid ({adv})",   callback_data=f"lv3_{vendor}|{product}|adv"),
+    ]])
+    await q.message.reply_text(
+        f"🏪 {vendor} — 📦 {product}\n\nDownload which?",
+        reply_markup=kb
     )
 
 async def do_download_labels(update, orders):
     if not orders:
-        await update.callback_query.message.reply_text("No labels in this group"); return
+        await update.callback_query.message.reply_text("No labels in this group")
+        return
     await update.callback_query.message.reply_text(f"⏳ Generating {len(orders)} labels...")
     downloaded = 0
     for o in orders:
@@ -1117,10 +1153,30 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text("Cancelled", reply_markup=MAIN_KB)
         ud.clear(); return
 
-    if data == "label_all":
-        await do_download_labels(update, get_label_queue()); return
-    if data.startswith("label_vendor_"):
-        await do_download_labels(update, get_label_queue_by_vendor(data.replace("label_vendor_",""))); return
+    # Labels — Level 1: vendor selected
+    if data.startswith("lv1_"):
+        vendor = data.replace("lv1_","")
+        await show_label_products(q, vendor)
+        return
+
+    # Labels — Level 2: product selected
+    if data.startswith("lv2_"):
+        parts   = data.replace("lv2_","").split("|",1)
+        vendor  = parts[0]
+        product = parts[1] if len(parts)>1 else ""
+        await show_label_filter(q, vendor, product)
+        return
+
+    # Labels — Level 3: all or advance
+    if data.startswith("lv3_"):
+        parts   = data.replace("lv3_","").split("|")
+        vendor  = parts[0]
+        product = parts[1] if len(parts)>1 else ""
+        mode    = parts[2] if len(parts)>2 else "all"
+        advance_only = (mode == "adv")
+        orders  = get_label_queue_by_vendor_product(vendor, product, advance_only=advance_only)
+        await do_download_labels(update, orders)
+        return
 
     if data.startswith("rep_"):
         r = get_payment_report()
@@ -1153,6 +1209,30 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines.append("\nUse: /setcreative <phone> <code>")
         await q.message.reply_text("\n".join(lines)); return
 
+    # Bulk action type selection
+    if data == "bulk_advance":
+        ctx.user_data["bulk_mode"] = "advance"
+        ctx.user_data["state"]     = "bulk_input"
+        await q.message.reply_text(
+            "💰 Bulk Mark Advance\n\nSend phone numbers + advance amount (last line):\n\n9845123456\n9876543210\n600",
+            parse_mode="Markdown"
+        ); return
+
+    if data == "bulk_rebook":
+        ctx.user_data["bulk_mode"] = "rebook"
+        ctx.user_data["state"]     = "bulk_input"
+        await q.message.reply_text(
+            "🔄 Bulk Rebook COD\n\nSend phone numbers + new COD (last line):\n\n9845123456\n9876543210\n3000",
+            parse_mode="Markdown"
+        ); return
+
+    if data == "bulk_continue":
+        await do_bulk_execute(q, ctx); return
+
+    if data == "bulk_cancel":
+        await q.message.reply_text("Cancelled", reply_markup=MAIN_KB)
+        ctx.user_data.clear(); return
+
     if data == "prod_add":
         ctx.user_data["state"] = "prod_add"
         await q.message.reply_text("Send: Name length breadth height weight"); return
@@ -1173,6 +1253,10 @@ async def main():
     get_token()
     log.info("Shiprocket auth OK")
     refresh_pickups()
+
+    log.info("Syncing orders from Google Sheet...")
+    sync_from_sheets()
+    log.info("Sync complete")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start",       cmd_start))
     app.add_handler(CommandHandler("adsspend",    cmd_adsspend))
@@ -1188,3 +1272,263 @@ if __name__ == "__main__":
     import nest_asyncio
     nest_asyncio.apply()
     asyncio.run(main())
+
+# ─── BULK ACTIONS ─────────────────────────
+
+async def show_bulk_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("💰 Bulk Mark Advance", callback_data="bulk_advance"),
+        InlineKeyboardButton("🔄 Bulk Rebook COD",   callback_data="bulk_rebook"),
+    ]])
+    await update.message.reply_text(
+        "⚡ *Bulk Actions*\n\n"
+        "Send phone numbers + amount (last line)\n\n"
+        "Example advance:\n`9845123456\n9876543210\n600`\n\n"
+        "Example rebook:\n`9845123456\n9876543210\n3000`",
+        parse_mode="Markdown",
+        reply_markup=kb
+    )
+
+async def do_bulk_parse(update: Update, ctx: ContextTypes.DEFAULT_TYPE, text: str):
+    """Parse bulk input: phones on each line, amount on last line."""
+    ud      = ctx.user_data
+    mode    = ud.get("bulk_mode")  # "advance" or "rebook"
+    lines   = [l.strip() for l in text.strip().splitlines() if l.strip()]
+
+    if len(lines) < 2:
+        await update.message.reply_text(
+            "❌ Need at least one phone number + amount.\n\nFormat:\n9845123456\n9876543210\n600"
+        )
+        return
+
+    # Last line = amount
+    try:
+        amount = int(lines[-1])
+    except:
+        await update.message.reply_text("❌ Last line must be the amount (e.g. 600 or 3000)")
+        return
+
+    phones = lines[:-1]
+
+    # Lookup each phone
+    found   = []
+    missing = []
+    for p in phones:
+        o = find_by_phone(p)
+        if o:
+            found.append(o)
+        else:
+            missing.append(p)
+
+    if missing:
+        miss_list = "\n".join(f"  `{p}`" for p in missing)
+        if not found:
+            await update.message.reply_text(
+                f"❌ None of these numbers found:\n{miss_list}\n\nCheck and resend.",
+                parse_mode="Markdown"
+            )
+            ud.clear()
+            return
+
+        # Some found, some missing — ask continue or cancel
+        found_list = "\n".join(f"  {o.get('customer_name','')} — {o.get('phone','')}" for o in found)
+        ud["bulk_found"]   = found
+        ud["bulk_amount"]  = amount
+        ud["state"]        = "bulk_confirm_partial"
+
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Continue with found", callback_data="bulk_continue"),
+            InlineKeyboardButton("❌ Cancel",               callback_data="bulk_cancel"),
+        ]])
+        await update.message.reply_text(
+            f"⚠️ *Not found ({len(missing)})* — recheck these:\n{miss_list}\n\n"
+            f"✅ *Found ({len(found)}):*\n{found_list}\n\n"
+            f"Continue with found only?",
+            parse_mode="Markdown",
+            reply_markup=kb
+        )
+        return
+
+    # All found — store and confirm
+    ud["bulk_found"]  = found
+    ud["bulk_amount"] = amount
+    await do_bulk_execute(update, ctx)
+
+async def do_bulk_execute(update_or_q, ctx: ContextTypes.DEFAULT_TYPE):
+    """Execute bulk action on all found orders."""
+    ud     = ctx.user_data
+    mode   = ud.get("bulk_mode")
+    found  = ud.get("bulk_found", [])
+    amount = ud.get("bulk_amount", 0)
+
+    reply = update_or_q.message if hasattr(update_or_q, "message") and update_or_q.message \
+            else update_or_q.callback_query.message
+
+    if mode == "advance":
+        await reply.reply_text(f"⏳ Marking ₹{amount} advance on {len(found)} orders...")
+        done = []
+        for o in found:
+            update_order(o.get("phone",""), advance_paid=amount)
+            done.append(f"#{o.get('order_number')} {o.get('customer_name','')} ✅")
+        await reply.reply_text(
+            f"✅ Advance ₹{amount} marked on {len(done)} orders\n\n" + "\n".join(done),
+            reply_markup=MAIN_KB
+        )
+        ud.clear()
+
+    elif mode == "rebook":
+        await reply.reply_text(f"⏳ Rebooking {len(found)} orders at COD ₹{amount:,}...")
+        label_pdfs = []
+        results    = []
+
+        for o in found:
+            sr = o.get("shiprocket") or {}
+            # Cancel old
+            ok, err = cancel_sr_order(sr.get("order_id","") or sr.get("shipment_id",""))
+            if not ok:
+                results.append(f"#{o.get('order_number')} {o.get('customer_name','')} ❌ Cancel failed: {err}")
+                continue
+
+            # Rebook
+            products  = json.load(open(PRODUCTS_FILE)) if os.path.exists(PRODUCTS_FILE) else {}
+            prod_name = o.get("product","Projector")
+            prod      = products.get(prod_name, {"length":20,"breadth":15,"height":10,"weight":0.5})
+            pickup_obj = resolve_pickup(o.get("pickup_location",""))
+            if not pickup_obj:
+                results.append(f"#{o.get('order_number')} ❌ Pickup not found")
+                continue
+
+            delivery_pin = str(o.get("pincode","560001"))
+            new_order_id = f"OBX{int(time.time())}_{uuid.uuid4().hex[:5]}"
+
+            payload = {
+                "order_id": new_order_id,
+                "order_date": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                "pickup_location": pickup_obj.get("pickup_location"),
+                "billing_customer_name": o.get("customer_name",""),
+                "billing_last_name": ".",
+                "billing_address": o.get("address",""),
+                "billing_city": o.get("city",""),
+                "billing_state": o.get("state","Karnataka"),
+                "billing_country": "India",
+                "billing_pincode": delivery_pin,
+                "billing_email": "orders@oneboxx.in",
+                "billing_isd_code": "91",
+                "billing_phone": o.get("phone",""),
+                "shipping_is_billing": True,
+                "order_items": [{"name": prod_name, "sku": prod_name, "units": 1,
+                                 "selling_price": amount, "discount":"0","tax":"0","hsn":""}],
+                "payment_method": "COD",
+                "sub_total": amount, "cod_amount": amount,
+                "length": float(prod["length"]), "breadth": float(prod["breadth"]),
+                "height": float(prod["height"]), "weight": float(prod["weight"]),
+            }
+
+            ensure_token()
+            r = session.post(f"{SR_BASE}/orders/create/adhoc", json=payload, timeout=45)
+            if r.status_code != 200:
+                results.append(f"#{o.get('order_number')} ❌ Rebook failed")
+                continue
+
+            resp        = r.json()
+            shipment_id = resp.get("shipment_id")
+            pickup_pin  = str(pickup_obj.get("pin_code","560001"))
+            couriers    = get_couriers(pickup_pin, delivery_pin, prod["weight"], True)
+            sorted_c    = sorted(couriers, key=lambda c: priority_rank(c.get("courier_name","")))
+            awb = None; chosen = None
+            for c_opt in sorted_c:
+                cid = c_opt.get("courier_company_id") or c_opt.get("courier_id")
+                awb = assign_awb(shipment_id, cid)
+                if awb: chosen = c_opt; break
+
+            if not awb:
+                results.append(f"#{o.get('order_number')} ❌ AWB failed")
+                continue
+
+            tracking = f"https://shiprocket.co/tracking/{awb}"
+            update_order(o.get("phone",""),
+                order_id=new_order_id, cod_amount=amount, status="active",
+                shiprocket={
+                    "order_id": resp.get("order_id",""), "shipment_id": shipment_id,
+                    "awb": awb, "courier": chosen.get("courier_name",""),
+                    "rate": chosen.get("rate",0), "tracking": tracking,
+                }
+            )
+
+            # Collect label PDF bytes
+            label_url = generate_label(shipment_id)
+            if label_url:
+                try:
+                    async with aiohttp.ClientSession() as s:
+                        async with s.get(label_url) as resp2:
+                            if resp2.status == 200:
+                                label_pdfs.append(await resp2.read())
+                except Exception as e:
+                    log.error(f"Label fetch bulk: {e}")
+
+            results.append(f"#{o.get('order_number')} {o.get('customer_name','')} ✅ {awb}")
+
+        # Summary
+        await reply.reply_text(
+            f"✅ Bulk rebook done\n\n" + "\n".join(results),
+            reply_markup=MAIN_KB
+        )
+
+        # Merge all PDFs into one and send
+        if label_pdfs:
+            await reply.reply_text("⏳ Merging labels into single PDF...")
+            try:
+                import io
+                from pypdf import PdfWriter
+                writer = PdfWriter()
+                for pdf_bytes in label_pdfs:
+                    from pypdf import PdfReader
+                    reader = PdfReader(io.BytesIO(pdf_bytes))
+                    for page in reader.pages:
+                        writer.add_page(page)
+                out = io.BytesIO()
+                writer.write(out)
+                out.seek(0)
+                fname = f"Bulk_Rebook_{date.today().strftime('%d%b')}.pdf"
+                await reply.reply_document(
+                    document=out.read(),
+                    filename=fname,
+                    caption=f"📄 {len(label_pdfs)} labels — Bulk rebook COD ₹{amount:,}"
+                )
+            except Exception as e:
+                log.error(f"PDF merge bulk: {e}")
+                await reply.reply_text("⚠️ PDF merge failed — labels were generated but could not merge")
+
+        ud.clear()
+
+# ─── DASHBOARD ────────────────────────────
+
+async def show_dashboard(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Push dashboard to Google Sheets and show summary."""
+    await update.message.reply_text("⏳ Building dashboard...")
+    try:
+        result = push_dashboard_to_sheets()
+        t = get_today_stats()
+        w = get_week_stats()
+        ads = get_today_ads()
+
+        lines = [
+            f"📈 *DASHBOARD — {date.today()}*",
+            f"————————————————",
+            f"📦 Today: {t['total']} orders",
+            f"💰 Advance paid: {t['advance_paid']}",
+            f"💵 Full COD: {t['full_cod']}",
+            f"⏳ Courier only: {t['courier_only']}",
+            f"",
+            f"📅 This week: {w['total']} orders",
+            f"📊 Conv rate: {w['conv_rate']}%",
+            f"💸 Revenue: ₹{w['revenue']:,}",
+            f"",
+            f"📢 Ad spend today: ₹{ads.get('total_spend',0)}",
+            f"🎯 CPO: {'₹'+str(ads.get('cpo',0)) if ads.get('cpo') else '—'}",
+            f"",
+            f"{'✅ Dashboard pushed to Google Sheets' if result else '⚠️ Sheet push failed — check credentials'}",
+        ]
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=MAIN_KB)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Dashboard error: {e}", reply_markup=MAIN_KB)
