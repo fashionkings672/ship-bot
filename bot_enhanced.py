@@ -229,37 +229,40 @@ def do_rebook_shipment(o, new_cod):
     return True, awb, shipment_id
 
 # ─── AI PARSER ────────────────────────────
-def ai_parse(text):
-    prompt = f"""Extract from this order text. Output EXACTLY this format:
+def ai_format_address(raw_text):
+    prompt = f"""
+You are a shipping assistant for Shiprocket.
+A customer has pasted a messy order.
+Your job is to carefully extract the required details and output them in the exact format:
+
+Input:
+{raw_text}
+
+Output format:
 Pickup: <pickup_location>
 Product: <product_name>
-Name: <full_name>
-Address: <street>
+Name: <customer_name>
+Address: <full_address_line_1>, <full_address_line_2>
 City: <city>
-State: <state — if not mentioned derive from pincode>
-Pincode: <6digit>
-Phone: <10digit>
-COD: <amount_number_only>
-
-Rules:
-- If State is not mentioned, derive it from the Pincode automatically.
-- Phone must be exactly 10 digits (remove +91 or 91 prefix if present).
-- COD must be number only, no ₹ symbol.
-
-Text:
-{text}"""
-    resp = openai.chat.completions.create(
-        model="gpt-4", messages=[{"role":"user","content":prompt}], temperature=0.1)
-    return resp.choices[0].message.content.strip()
-
-def parse_fields(text):
-    data = {}
-    for line in text.splitlines():
-        if ":" in line:
-            k,v = line.split(":",1)
-            data[k.strip().lower()] = v.strip()
-    return data
-
+District: <district>
+State: <state>
+Pincode: <pincode>
+Phone: <10_digit_phone_number>
+Alternate Phone: <10_digit_alt_phone_or_leave_blank>
+Prepaid/COD: <payment_type> <amount>
+Quantity: <number_of_units>
+"""
+    try:
+        response = openai.chat.completions.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        formatted_text = response.choices[0].message.content.strip()
+        return formatted_text
+    except Exception as e:
+        log.error(f"OpenAI API error: {e}")
+        raise
 # ─── KEYBOARDS ────────────────────────────
 MAIN_KB = ReplyKeyboardMarkup([
     ["➕ Create Shipment", "🔍 Search Order"],
