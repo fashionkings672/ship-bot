@@ -252,14 +252,16 @@ Alternate Phone: <10_digit_alt_phone_or_leave_blank>
 Prepaid/COD: <payment_type> <amount>
 Quantity: <number_of_units>
 """
+
     try:
-        response = openai.chat.completions.create(
-            model="gpt-4",
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",  # fast + cheap + stable
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3
         )
-        formatted_text = response.choices[0].message.content.strip()
-        return formatted_text
+
+        return response.choices[0].message.content.strip()
+
     except Exception as e:
         log.error(f"OpenAI API error: {e}")
         raise
