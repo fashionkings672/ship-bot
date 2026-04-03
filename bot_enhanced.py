@@ -39,6 +39,7 @@ if not SHIPROCKET_PASS:  raise ValueError("SHIPROCKET_PASSWORD not set")
 if not OPENAI_API_KEY:   raise ValueError("OPENAI_API_KEY not set")
 
 openai.api_key = OPENAI_API_KEY
+client = openai.OpenAI(api_key=OPENAI_API_KEY)  
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("bot")
 
@@ -498,7 +499,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def do_create(update, ctx, text):
     msg = await update.message.reply_text("⏳ Processing with AI...")
     try:
-        parsed = ai_parse(text); d = parse_fields(parsed)
+        parsed = ai_format_address(text); d = parse_fields(parsed)
         if not d.get("phone") or not d.get("pincode"):
             await msg.edit_text("❌ Missing phone or pincode.\n\nFormat:\nName\nPhone\nAddress, City\nPincode\nProduct\nCOD amount")
             ctx.user_data.clear(); return
