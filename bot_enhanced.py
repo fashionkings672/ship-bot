@@ -266,6 +266,16 @@ Quantity: <number_of_units>
     except Exception as e:
         log.error(f"OpenAI API error: {e}")
         raise
+        def parse_fields(parsed_text):
+    # Parse formatted output into structured fields
+    try:
+        lines = parsed_text.split("\n")
+        fields = {line.split(":")[0].strip(): line.split(":")[1].strip() for line in lines if ":" in line}
+        return fields
+    except Exception as e:
+        log.error(f"Error parsing fields: {e}")
+        return {}
+        
 # ─── KEYBOARDS ────────────────────────────
 MAIN_KB = ReplyKeyboardMarkup([
     ["➕ Create Shipment", "🔍 Search Order"],
