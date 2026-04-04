@@ -255,6 +255,7 @@ Alternate Phone: <10_digit_alt_phone_or_leave_blank>
 Prepaid/COD: <payment_type> <amount>
 Quantity: <number_of_units>
 """
+
     try:
         response = openai.chat.completions.create(
             model="gpt-4",
@@ -263,11 +264,10 @@ Quantity: <number_of_units>
         )
         formatted_text = response.choices[0].message.content.strip()
         return formatted_text
+
     except Exception as e:
         log.error(f"OpenAI API error: {e}")
         raise
-
-
 # -------- SHIPROCKET API FUNCTIONS --------
 def get_available_couriers(pickup_pin, delivery_pin, weight, cod):
     try:
