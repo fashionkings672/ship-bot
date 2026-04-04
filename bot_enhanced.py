@@ -1,7 +1,7 @@
 """
 bot_enhanced.py — Oneboxx Ship Bot Final
 Changes:
-- Stat auto-fill from pincode if missing
+- State auto-fill from pincode if missing
 - Bulk rebook: direct execute if all found, confirm only if some missing
 - Duplicate customer check on create shipment
 - Monthly sheet tabs
@@ -39,7 +39,6 @@ if not SHIPROCKET_PASS:  raise ValueError("SHIPROCKET_PASSWORD not set")
 if not OPENAI_API_KEY:   raise ValueError("OPENAI_API_KEY not set")
 
 openai.api_key = OPENAI_API_KEY
-client = openai.OpenAI(api_key=OPENAI_API_KEY)  
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("bot")
 
@@ -231,82 +230,45 @@ def do_rebook_shipment(o, new_cod):
 
 # ─── AI PARSER ────────────────────────────
 def ai_parse(text):
-    """Calls the OpenAI API to parse the text."""
-    prompt = f"""You are a shipping assistant for Shiprocket.
-A customer has pasted a messy order.
-Your job is to carefully extract the required details and output them in the exact format:
-
+    prompt = f"""Extract from this order text. Output EXACTLY this format:
 Pickup: <pickup_location>
 Product: <product_name>
 Name: <full_name>
 Address: <street>
-Landmark: <landmark_if_mentioned_or_NA>
+Landmark: <landmark_or_NA>
 City: <city>
-State: <state>
+State: <state — if not mentioned derive from pincode>
 Pincode: <6digit>
-Phone: <10digit_primary>
-Alt_Phone: <10digit_alternative_or_NA>
+Phone: <10digit>
+Alt_Phone: <10digit_or_NA>
 Payment_Mode: <COD_or_PREPAID>
 Amount: <amount_number_only>
 
 Rules:
 - If State is not mentioned, derive it from the Pincode automatically.
 - Phone must be exactly 10 digits (remove +91 or 91 prefix if present).
-- Alt_Phone: Extract secondary/alternative/backup number if mentioned, otherwise put "NA".
-- Amount must be number only, no ₹ or Rs symbol.
-- Payment_Mode: Use "COD" or "PREPAID". Default to "COD" if unclear.
+- Alt_Phone = alternative/secondary number or NA.
+- Payment_Mode = COD or PREPAID.
+- Amount must be number only, no ₹ symbol.
+- Landmark = nearby/near/behind/etc or NA.
 
-Customer Order:
+Text:
 {text}"""
     
-    try:
-        resp = openai.chat.completions.create(
-            model="gpt-4", 
-            messages=[{"role": "user", "content": prompt}], 
-            temperature=0.1
-        )
-        return resp.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"Error calling OpenAI: {e}")
-        return ""
+    resp = openai.chat.completions.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1
+    )
+    return resp.choices[0].message.content.strip()
 
 
-def clean_phone(phone_str):
-    """Cleans a string to a 10-digit phone number."""
-    if not phone_str or phone_str.upper() == 'NA':
-        return "NA"
-    phone = ''.join(filter(str.isdigit, str(phone_str)))
-    if len(phone) > 10 and phone.startswith('91'):
-        phone = phone[2:]
-    return phone if len(phone) == 10 else "NA"
-
-
-def process_order(text):
-    """
-    Main function to parse text and return a clean dictionary.
-    """
-    ai_response = ai_parse(text)
-    if not ai_response:
-        return {"error": "AI parsing failed"}
-
-    # Parse the AI's key-value response
+def parse_fields(text):
     data = {}
-    for line in ai_response.splitlines():
+    for line in text.splitlines():
         if ":" in line:
             k, v = line.split(":", 1)
-            data[k.strip().lower().replace(" ", "_")] = v.strip()
-
-    # Clean the extracted data
-    data['phone'] = clean_phone(data.get('phone', ''))
-    data['alt_phone'] = clean_phone(data.get('alt_phone', ''))
-    
-    if 'amount' in data:
-        data['amount'] = ''.join(filter(str.isdigit, data['amount'])) or '0'
-        
-    if 'payment_mode' in data:
-        mode = data['payment_mode'].upper()
-        data['payment_mode'] = 'PREPAID' if 'PREPAID' in mode or 'PAID' in mode else 'COD'
-    
+            data[k.strip().lower()] = v.strip()
     return data
 # ─── KEYBOARDS ────────────────────────────
 MAIN_KB = ReplyKeyboardMarkup([
@@ -541,7 +503,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def do_create(update, ctx, text):
     msg = await update.message.reply_text("⏳ Processing with AI...")
     try:
-        parsed = ai_format_address(text); d = parse_fields(parsed)
+        parsed = ai_parse(text); d = parse_fields(parsed)
         if not d.get("phone") or not d.get("pincode"):
             await msg.edit_text("❌ Missing phone or pincode.\n\nFormat:\nName\nPhone\nAddress, City\nPincode\nProduct\nCOD amount")
             ctx.user_data.clear(); return
