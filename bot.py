@@ -234,27 +234,27 @@ def refresh_pickups():
 # -------- OPENAI ADDRESS FORMATTING --------
 def ai_format_address(raw_text):
     prompt = f"""
-You are a shipping assistant for Shiprocket.
-A customer has pasted a messy order.
-Your job is to carefully extract the required details and output them in the exact format:
+    You are a shipping assistant for Shiprocket.
+    A customer has pasted a messy order.
+    Your job is to carefully extract the required details and output them in the exact format:
 
-Input:
-{raw_text}
+    Input:
+    {raw_text}
 
-Output format:
-Pickup: <pickup_location>
-Product: <product_name>
-Name: <customer_name>
-Address: <full_address_line_1>, <full_address_line_2>
-City: <city>
-District: <district>
-State: <state>
-Pincode: <pincode>
-Phone: <10_digit_phone_number>
-Alternate Phone: <10_digit_alt_phone_or_leave_blank>
-Prepaid/COD: <payment_type> <amount>
-Quantity: <number_of_units>
-"""
+    Output format:
+    Pickup: <pickup_location>
+    Product: <product_name>
+    Name: <customer_name>
+    Address: <full_address_line_1>, <full_address_line_2>
+    City: <city>
+    District: <district>
+    State: <state>
+    Pincode: <pincode>
+    Phone: <10_digit_phone_number>
+    Alternate Phone: <10_digit_alt_phone_or_leave_blank>
+    Prepaid/COD: <payment_type> <amount>
+    Quantity: <number_of_units>
+    """
 
     try:
         response = openai.chat.completions.create(
@@ -268,6 +268,16 @@ Quantity: <number_of_units>
     except Exception as e:
         log.error(f"OpenAI API error: {e}")
         raise
+
+def parse_fields(parsed_text):
+    # Parse formatted output into structured fields
+    try:
+        lines = parsed_text.split("\n")
+        fields = {line.split(":")[0].strip(): line.split(":")[1].strip() for line in lines if ":" in line}
+        return fields
+    except Exception as e:
+        log.error(f"Error parsing fields: {e}")
+        return {}
 # -------- SHIPROCKET API FUNCTIONS --------
 def get_available_couriers(pickup_pin, delivery_pin, weight, cod):
     try:
