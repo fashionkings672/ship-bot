@@ -247,6 +247,7 @@ Amount: <amount_number_only>
 Rules:
 - If State is not mentioned, derive it from the Pincode automatically.
 - Phone must be exactly 10 digits (remove +91 or 91 prefix if present).
+- Do NOT repeat pincode/city/state inside Address.
 - Alt_Phone = alternative/secondary number or NA.
 - Payment_Mode = COD or PREPAID.
 - Amount must be number only, no ₹ symbol.
