@@ -1,7 +1,7 @@
 """
 bot_enhanced.py — Oneboxx Ship Bot Final
 Changes:
-- State auto-fill from pincode if missing
+- Stat auto-fill from pincode if missing
 - Bulk rebook: direct execute if all found, confirm only if some missing
 - Duplicate customer check on create shipment
 - Monthly sheet tabs
