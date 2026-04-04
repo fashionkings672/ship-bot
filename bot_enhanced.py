@@ -232,106 +232,50 @@ def do_rebook_shipment(o, new_cod):
 # ─── AI PARSER ────────────────────────────
 def ai_format_address(raw_text):
     prompt = f"""
-You are a shipping assistant for Shiprocket.
-Extract details from a messy order and return ONLY in this format:
+    You are a shipping assistant for Shiprocket.
+    A customer has pasted a messy order.
+    Your job is to carefully extract the required details and output them in the exact format:
 
-Pickup: <pickup_location>
-Product: <product_name>
-Name: <customer_name>
-Address: <full_address>
-Landmark: <landmark_or_blank>
-City: <city>
-District: <district>
-State: <state>
-Pincode: <pincode>
-Phone: <10_digit_phone>
-Alternate Phone: <10_digit_or_blank>
-Prepaid/COD: <Prepaid or COD> <amount>
-Quantity: <number>
+    Input:
+    {raw_text}
 
-Input:
-{raw_text}
-"""
+    Output format:
+    Pickup: <pickup_location>
+    Product: <product_name>
+    Name: <customer_name>
+    Address: <full_address_line_1>, <full_address_line_2>
+    City: <city>
+    District: <district>
+    State: <state>
+    Pincode: <pincode>
+    Phone: <10_digit_phone_number>
+    Alternate Phone: <10_digit_alt_phone_or_leave_blank>
+    Prepaid/COD: <payment_type> <amount>
+    Quantity: <number_of_units>
+    """
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+        response = openai.chat.completions.create(
+            model="gpt-4",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3
         )
-
-        return response.choices[0].message.content.strip()
+        formatted_text = response.choices[0].message.content.strip()
+        return formatted_text
 
     except Exception as e:
         log.error(f"OpenAI API error: {e}")
         raise
 
-
 def parse_fields(parsed_text):
-    """Convert AI output → structured dict"""
-    data = {}
-
+    # Parse formatted output into structured fields
     try:
-        for line in parsed_text.splitlines():
-            if ":" not in line:
-                continue
-
-            key, value = line.split(":", 1)
-            key = key.strip().lower()
-            value = value.strip()
-
-            if key == "pickup":
-                data["pickup"] = value
-
-            elif key == "product":
-                data["product"] = value
-
-            elif key == "name":
-                data["name"] = value
-
-            elif key == "address":
-                data["address"] = value
-
-            elif key == "landmark":
-                data["landmark"] = value
-
-            elif key == "city":
-                data["city"] = value
-
-            elif key == "district":
-                data["district"] = value
-
-            elif key == "state":
-                data["state"] = value
-
-            elif key == "pincode":
-                data["pincode"] = re.sub(r"\D", "", value)
-
-            elif key == "phone":
-                data["phone"] = re.sub(r"\D", "", value)[-10:]
-
-            elif key == "alternate phone":
-                data["alt_phone"] = re.sub(r"\D", "", value)[-10:] if value else ""
-
-            elif key == "prepaid/cod":
-                parts = value.split()
-
-                if len(parts) >= 2:
-                    data["payment_method"] = parts[0].lower()
-                    data["amount"] = float(re.sub(r"[^\d.]", "", parts[1]))
-                else:
-                    data["payment_method"] = "prepaid"
-                    data["amount"] = 0
-
-            elif key == "quantity":
-                data["quantity"] = int(re.sub(r"\D", "", value) or 1)
-
-        return data
-
+        lines = parsed_text.split("\n")
+        fields = {line.split(":")[0].strip(): line.split(":")[1].strip() for line in lines if ":" in line}
+        return fields
     except Exception as e:
-        log.error(f"Parse error: {e}")
+        log.error(f"Error parsing fields: {e}")
         return {}
-        
 # ─── KEYBOARDS ────────────────────────────
 MAIN_KB = ReplyKeyboardMarkup([
     ["➕ Create Shipment", "🔍 Search Order"],
