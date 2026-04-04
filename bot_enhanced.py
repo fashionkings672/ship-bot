@@ -230,52 +230,94 @@ def do_rebook_shipment(o, new_cod):
     return True, awb, shipment_id
 
 # ─── AI PARSER ────────────────────────────
-def ai_format_address(raw_text):
-    prompt = f"""
-    You are a shipping assistant for Shiprocket.
-    A customer has pasted a messy order.
-    Your job is to carefully extract the required details and output them in the exact format:
+import openai
 
-    Input:
-    {raw_text}
+def ai_parse(text):
+    prompt = f"""You are a shipping assistant for Shiprocket.
+A customer has pasted a messy order.
+Your job is to carefully extract the required details and output them in the exact format:
 
-    Output format:
-    Pickup: <pickup_location>
-    Product: <product_name>
-    Name: <customer_name>
-    Address: <full_address_line_1>, <full_address_line_2>
-    City: <city>
-    District: <district>
-    State: <state>
-    Pincode: <pincode>
-    Phone: <10_digit_phone_number>
-    Alternate Phone: <10_digit_alt_phone_or_leave_blank>
-    Prepaid/COD: <payment_type> <amount>
-    Quantity: <number_of_units>
-    """
+Pickup: <pickup_location>
+Product: <product_name>
+Name: <full_name>
+Address: <street>
+Landmark: <landmark_if_mentioned_or_NA>
+City: <city>
+State: <state>
+Pincode: <6digit>
+Phone: <10digit_primary>
+Alt_Phone: <10digit_alternative_or_NA>
+Payment_Mode: <COD_or_PREPAID>
+Amount: <amount_number_only>
 
-    try:
-        response = openai.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
-        )
-        formatted_text = response.choices[0].message.content.strip()
-        return formatted_text
+Rules:
+- If State is not mentioned, derive it from the Pincode automatically.
+- Phone must be exactly 10 digits (remove +91 or 91 prefix if present).
+- Alt_Phone: Extract secondary/alternative/backup number if mentioned, otherwise put "NA".
+- Amount must be number only, no ₹ or Rs symbol.
+- Landmark: Extract if mentioned (near, behind, opposite, beside, next to, etc.), otherwise put "NA".
+- Payment_Mode: 
+  - Use "COD" if cash on delivery, cod, collect payment, payment on delivery mentioned.
+  - Use "PREPAID" if prepaid, paid, online payment, already paid, advance paid mentioned.
+  - Default to "COD" if unclear.
 
-    except Exception as e:
-        log.error(f"OpenAI API error: {e}")
-        raise
+Customer Order:
+{text}"""
+    
+    resp = openai.chat.completions.create(
+        model="gpt-4", 
+        messages=[{"role": "user", "content": prompt}], 
+        temperature=0.1
+    )
+    return resp.choices[0].message.content.strip()
 
-def parse_fields(parsed_text):
-    # Parse formatted output into structured fields
-    try:
-        lines = parsed_text.split("\n")
-        fields = {line.split(":")[0].strip(): line.split(":")[1].strip() for line in lines if ":" in line}
-        return fields
-    except Exception as e:
-        log.error(f"Error parsing fields: {e}")
-        return {}
+
+def clean_phone(phone_str):
+    if not phone_str or phone_str.upper() == 'NA':
+        return None
+    phone = phone_str.replace('+91', '').replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
+    if phone.startswith('91') and len(phone) == 12:
+        phone = phone[2:]
+    if phone.startswith('0') and len(phone) == 11:
+        phone = phone[1:]
+    if len(phone) == 10 and phone.isdigit():
+        return phone
+    return None
+
+
+def parse_fields(text):
+    data = {}
+    for line in text.splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            data[k.strip().lower().replace(" ", "_")] = v.strip()
+    return data
+
+
+def process_order(text):
+    ai_response = ai_parse(text)
+    parsed_data = parse_fields(ai_response)
+    
+    if 'phone' in parsed_data:
+        parsed_data['phone'] = clean_phone(parsed_data['phone'])
+    
+    if 'alt_phone' in parsed_data:
+        cleaned_alt = clean_phone(parsed_data['alt_phone'])
+        parsed_data['alt_phone'] = cleaned_alt if cleaned_alt else "NA"
+    
+    if 'amount' in parsed_data:
+        parsed_data['amount'] = ''.join(filter(str.isdigit, parsed_data['amount']))
+    
+    if 'payment_mode' in parsed_data:
+        mode = parsed_data['payment_mode'].upper()
+        parsed_data['payment_mode'] = 'PREPAID' if 'PREPAID' in mode or 'PAID' in mode else 'COD'
+        parsed_data['is_cod'] = parsed_data['payment_mode'] == 'COD'
+    
+    if 'landmark' in parsed_data:
+        if parsed_data['landmark'].upper() in ['NA', 'N/A', 'NONE', '-', '']:
+            parsed_data['landmark'] = "NA"
+    
+    return parsed_data
 # ─── KEYBOARDS ────────────────────────────
 MAIN_KB = ReplyKeyboardMarkup([
     ["➕ Create Shipment", "🔍 Search Order"],
