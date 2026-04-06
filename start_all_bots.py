@@ -1,5 +1,5 @@
 """
-start_all_bots.py - Run all Oneboxx bots together
+start_all_bots.py - Run all Oneboxx bots togethers
 Handles:
 - bot.py (first shipping bot)
 - bot_enhanced.py (main shipping bot)
