@@ -1,7 +1,23 @@
+# Telegram Bot
 python-telegram-bot==20.7
 nest-asyncio==1.6.0
+
+# HTTP & Async
 aiohttp==3.10.5
 requests==2.31.0
+
+# AI
 openai>=1.30.0
+
+# Google Sheets
 gspread>=6.0.0
 google-auth>=2.0.0
+google-auth-oauthlib>=1.0
+google-auth-httplib2>=0.1
+
+# Report Bot Dependencies (MISSING - ADD THESE)
+apscheduler>=3.10.0
+facebook-business>=17.0.0
+
+# PDF handling
+pypdf>=3.0.0
