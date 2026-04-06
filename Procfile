@@ -1,1 +1,1 @@
-python start_all_bots.py
+worker: python start_all_bots.py
