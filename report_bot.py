@@ -4,7 +4,7 @@ report_bot.py — Oneboxx Report Bot (FINAL)
 - Facebook Ads integration with creative matching
 - Daily automated checks (not picked up, cancelled)
 - AI-powered analysis
-- Complete performance reports
+- Complete performance reportss
 """
 
 import os, re, json, logging, asyncio
