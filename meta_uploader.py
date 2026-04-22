@@ -98,32 +98,49 @@ def parse_date_to_iso(val) -> str:
         return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 def parse_date_to_str(val) -> str:
-    """Parse date to simple YYYY-MM-DD string for Events sheet."""
+    """Parse date+time to YYYY-MM-DD HH:MM format for Events sheet."""
+    fmt = "%Y-%m-%d %H:%M"
     try:
         if isinstance(val, datetime):
-            actual = val
+            return val.strftime(fmt)
         elif isinstance(val, str):
             val = val.strip()
             if not val or val.lower() in ("nan", "none"):
-                return datetime.now(IST).strftime("%Y-%m-%d")
+                return datetime.now(IST).strftime(fmt)
             elif "T" in val:
                 dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
-                return dt.astimezone(IST).strftime("%Y-%m-%d")
+                return dt.astimezone(IST).strftime(fmt)
             elif "/" in val:
-                actual = datetime.strptime(val, "%m/%d/%Y")
-                return actual.strftime("%Y-%m-%d")
+                try:
+                    return datetime.strptime(val, "%m/%d/%Y %H:%M:%S").strftime(fmt)
+                except Exception:
+                    return datetime.strptime(val, "%m/%d/%Y").replace(
+                        hour=datetime.now(IST).hour,
+                        minute=datetime.now(IST).minute
+                    ).strftime(fmt)
             elif "-" in val:
                 try:
-                    actual = datetime.strptime(val.split(" ")[0], "%d-%m-%Y")
+                    return datetime.strptime(val, "%d-%m-%Y %H:%M:%S").strftime(fmt)
                 except Exception:
-                    actual = datetime.strptime(val.split(" ")[0], "%Y-%m-%d")
-                return actual.strftime("%Y-%m-%d")
+                    try:
+                        return datetime.strptime(val, "%Y-%m-%d %H:%M:%S").strftime(fmt)
+                    except Exception:
+                        try:
+                            return datetime.strptime(val.split(" ")[0], "%d-%m-%Y").replace(
+                                hour=datetime.now(IST).hour,
+                                minute=datetime.now(IST).minute
+                            ).strftime(fmt)
+                        except Exception:
+                            return datetime.strptime(val.split(" ")[0], "%Y-%m-%d").replace(
+                                hour=datetime.now(IST).hour,
+                                minute=datetime.now(IST).minute
+                            ).strftime(fmt)
             else:
-                return datetime.now(IST).strftime("%Y-%m-%d")
+                return datetime.now(IST).strftime(fmt)
         else:
-            return datetime.now(IST).strftime("%Y-%m-%d")
+            return datetime.now(IST).strftime(fmt)
     except Exception:
-        return datetime.now(IST).strftime("%Y-%m-%d")
+        return datetime.now(IST).strftime(fmt)
 
 # ─── GOOGLE SHEET CLIENT ──────────────────────────────────────────────────────
 
