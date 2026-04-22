@@ -297,7 +297,7 @@ def order_action_kb(order_id, phone):
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     await update.message.reply_text(
-        "🚀 *Oneboxx Ship Bot*\n\n/adsspend /orders /report /setcreative",
+        "🚀 *Oneboxx Ship Bot*\n\n/adsspend /orders /report /setcreative /uploadfb",
         parse_mode="Markdown", reply_markup=MAIN_KB)
 
 # ─── COMMANDS ─────────────────────────────
@@ -382,8 +382,9 @@ async def cmd_setcreative(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else: await update.message.reply_text("❌ Order not found")
     else:
         await update.message.reply_text("Usage: /setcreative <phone> <code>")
-        
- async def cmd_uploadfb(update, ctx):
+
+# ── NEW: /uploadfb command ──
+async def cmd_uploadfb(update, ctx):
     """
     /uploadfb — manually trigger Meta offline events upload
     """
@@ -392,7 +393,7 @@ async def cmd_setcreative(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         result = run_upload()
         await msg.edit_text(result, parse_mode="Markdown")
     except Exception as e:
-        await msg.edit_text(f"❌ Upload failed: {e}")       
+        await msg.edit_text(f"❌ Upload failed: {e}")
 
 # ─── MESSAGE HANDLER ──────────────────────
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1276,4 +1277,6 @@ async def main():
  
     log.info("Bot running...")
     await app.run_polling()
- 
+
+if __name__ == "__main__":
+    asyncio.run(main())
