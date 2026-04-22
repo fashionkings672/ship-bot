@@ -11,8 +11,6 @@ Changes:
 - FIXED: Courier charges hardcoded to ₹300
 - REMOVED: Bulk actions, Creative, Payment Report buttons
 """
-from meta_uploader import run_upload
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import os, re, json, uuid, time, logging, asyncio, aiohttp, io
 import requests
 from datetime import datetime, date, timedelta
@@ -297,7 +295,7 @@ def order_action_kb(order_id, phone):
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     await update.message.reply_text(
-        "🚀 *Oneboxx Ship Bot*\n\n/adsspend /orders /report /setcreative /uploadfb",
+        "🚀 *Oneboxx Ship Bot*\n\n/adsspend /orders /report /setcreative",
         parse_mode="Markdown", reply_markup=MAIN_KB)
 
 # ─── COMMANDS ─────────────────────────────
@@ -382,18 +380,6 @@ async def cmd_setcreative(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else: await update.message.reply_text("❌ Order not found")
     else:
         await update.message.reply_text("Usage: /setcreative <phone> <code>")
-
-# ── NEW: /uploadfb command ──
-async def cmd_uploadfb(update, ctx):
-    """
-    /uploadfb — manually trigger Meta offline events upload
-    """
-    msg = await update.message.reply_text("⏳ Uploading orders to Meta...")
-    try:
-        result = run_upload()
-        await msg.edit_text(result, parse_mode="Markdown")
-    except Exception as e:
-        await msg.edit_text(f"❌ Upload failed: {e}")
 
 # ─── MESSAGE HANDLER ──────────────────────
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1235,35 +1221,20 @@ async def main():
     log.info("Syncing from sheets...")
     sync_from_sheets()
     log.info("Sync done")
- 
+    
     app = ApplicationBuilder().token(BOT_TOKEN).build()
- 
-    # Existing handlers
-    app.add_handler(CommandHandler("start",        cmd_start))
-    app.add_handler(CommandHandler("adsspend",     cmd_adsspend))
-    app.add_handler(CommandHandler("orders",       cmd_orders))
-    app.add_handler(CommandHandler("report",       cmd_report))
-    app.add_handler(CommandHandler("setcreative",  cmd_setcreative))
- 
-    # ── NEW: Meta upload command ──
-    app.add_handler(CommandHandler("uploadfb",     cmd_uploadfb))
- 
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("adsspend", cmd_adsspend))
+    app.add_handler(CommandHandler("orders", cmd_orders))
+    app.add_handler(CommandHandler("report", cmd_report))
+    app.add_handler(CommandHandler("setcreative", cmd_setcreative))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
- 
-       # ── Daily scheduler at 11:00 PM IST ──
-    async def scheduled_upload():
-        log.info("Scheduled Meta upload starting...")
-        result = run_upload()
-        log.info(f"Scheduled upload done: {result[:100]}")
-
-    scheduler = AsyncIOScheduler(timezone=pytz.timezone("Asia/Kolkata"))
-    scheduler.add_job(scheduled_upload, "cron", hour=23, minute=0)
-    scheduler.start()
-    log.info("Scheduler started — Meta upload runs daily at 11:00 PM IST")
-
+    
     log.info("Bot running...")
     await app.run_polling()
 
 if __name__ == "__main__":
+    import nest_asyncio
+    nest_asyncio.apply()
     asyncio.run(main())
