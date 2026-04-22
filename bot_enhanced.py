@@ -1251,30 +1251,17 @@ async def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
  
-    # ── NEW: Daily scheduler at 11:00 PM IST ──
-    YOUR_TELEGRAM_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # add this to Railway env vars
- 
+       # ── Daily scheduler at 11:00 PM IST ──
     async def scheduled_upload():
         log.info("Scheduled Meta upload starting...")
         result = run_upload()
         log.info(f"Scheduled upload done: {result[:100]}")
-        # Send result to your Telegram chat
-        if YOUR_TELEGRAM_CHAT_ID:
-            try:
-                await app.bot.send_message(
-                    chat_id=YOUR_TELEGRAM_CHAT_ID,
-                    text=result,
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                log.error(f"Telegram notify failed: {e}")
- 
-    import pytz
+
     scheduler = AsyncIOScheduler(timezone=pytz.timezone("Asia/Kolkata"))
-    scheduler.add_job(scheduled_upload, "cron", hour=23, minute=0)  # 11:00 PM IST
+    scheduler.add_job(scheduled_upload, "cron", hour=23, minute=0)
     scheduler.start()
     log.info("Scheduler started — Meta upload runs daily at 11:00 PM IST")
- 
+
     log.info("Bot running...")
     await app.run_polling()
 
