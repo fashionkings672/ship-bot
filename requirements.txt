@@ -1,25 +1,11 @@
-# Telegram Bot Framework
 python-telegram-bot==20.7
 nest-asyncio==1.6.0
-
-# HTTP & Async
 aiohttp==3.10.5
 requests==2.31.0
-
-# AI Integration
 openai>=1.30.0
-
-# Google Sheets Integration
 gspread>=6.0.0
 google-auth>=2.0.0
 google-auth-oauthlib>=1.0
 google-auth-httplib2>=0.1
-
-# Report Bot Dependencies
 apscheduler>=3.10.0
-facebook-business>=17.0.0
-
-# PDF Handling
-pypdf>=3.0.0
-apscheduler
 pytz
