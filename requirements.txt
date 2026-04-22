@@ -21,3 +21,5 @@ facebook-business>=17.0.0
 
 # PDF Handling
 pypdf>=3.0.0
+apscheduler
+pytz
