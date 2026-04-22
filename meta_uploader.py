@@ -1,7 +1,9 @@
 """
 meta_uploader.py — Oneboxx Meta Offline Events Uploader
-Auto-creates 'Events' tab, writes clean formatted data,
-and uploads to Facebook Offline Events API.
+- Only TODAY's orders go to Events tab and Meta
+- No duplicate entries ever
+- Meta receives UTC/GMT time
+- Events sheet shows IST time
 """
 
 import os
@@ -70,77 +72,161 @@ def guess_state(pincode: str) -> str:
     """Auto-detect state from first 3 digits of pincode."""
     return PINCODE_STATE.get(str(pincode).strip()[:3], "karnataka")
 
+# ─── DATE PARSERS ─────────────────────────────────────────────────────────────
+
 def parse_date_to_iso(val) -> str:
-    """Parse various date formats to UTC ISO string."""
+    """
+    Parse date to UTC/GMT ISO format for Meta API.
+    Meta requires: 2026-04-22T15:00:00Z
+    Converts IST to UTC automatically.
+    """
     try:
         if isinstance(val, datetime):
-            actual = val
+            dt = val
         elif isinstance(val, str):
             val = val.strip()
             if not val or val.lower() in ("nan", "none"):
-                actual = datetime.now()
+                dt = datetime.now(IST)
+            elif "T" in val and ("Z" in val or "+" in val):
+                dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+                return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             elif "T" in val:
-                actual = datetime.fromisoformat(val.replace("Z", "+00:00"))
-                return actual.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                dt = datetime.fromisoformat(val)
+                dt = IST.localize(dt)
+                return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            elif " " in val and "-" in val:
+                try:
+                    dt = datetime.strptime(val, "%Y-%m-%d %H:%M")
+                except Exception:
+                    dt = datetime.strptime(val, "%Y-%m-%d %H:%M:%S")
+                dt = IST.localize(dt)
+                return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             elif "/" in val:
-                actual = datetime.strptime(val, "%m/%d/%Y").replace(hour=12)
+                try:
+                    dt = datetime.strptime(val, "%m/%d/%Y %H:%M:%S")
+                except Exception:
+                    try:
+                        dt = datetime.strptime(val, "%m/%d/%Y %H:%M")
+                    except Exception:
+                        dt = datetime.strptime(val, "%m/%d/%Y").replace(
+                            hour=datetime.now(IST).hour,
+                            minute=datetime.now(IST).minute
+                        )
+                dt = IST.localize(dt)
+                return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             elif "-" in val:
-                actual = datetime.strptime(val.split(" ")[0], "%d-%m-%Y").replace(hour=12)
+                try:
+                    dt = datetime.strptime(val.split(" ")[0], "%d-%m-%Y")
+                except Exception:
+                    dt = datetime.strptime(val.split(" ")[0], "%Y-%m-%d")
+                if " " in val:
+                    try:
+                        t = datetime.strptime(val.split(" ")[1], "%H:%M:%S").time()
+                    except Exception:
+                        try:
+                            t = datetime.strptime(val.split(" ")[1], "%H:%M").time()
+                        except Exception:
+                            t = datetime.now(IST).time()
+                    dt = datetime.combine(dt.date(), t)
+                else:
+                    dt = dt.replace(
+                        hour=datetime.now(IST).hour,
+                        minute=datetime.now(IST).minute
+                    )
+                dt = IST.localize(dt)
+                return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             else:
-                actual = datetime.now()
+                dt = datetime.now(IST)
         else:
-            actual = datetime.now()
+            dt = datetime.now(IST)
 
-        dt_ist = IST.localize(actual) if actual.tzinfo is None else actual
-        return dt_ist.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if dt.tzinfo is None:
+            dt = IST.localize(dt)
+
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     except Exception as e:
-        log.warning(f"Date parse failed: {e}")
+        log.warning(f"Date parse failed for '{val}': {e}")
         return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 def parse_date_to_str(val) -> str:
-    """Parse date+time to YYYY-MM-DD HH:MM format for Events sheet."""
+    """
+    Parse date to IST local time for Events sheet.
+    Returns: 2026-04-22 20:30
+    """
     fmt = "%Y-%m-%d %H:%M"
     try:
         if isinstance(val, datetime):
-            return val.strftime(fmt)
+            dt = val
+            if dt.tzinfo is None:
+                dt = IST.localize(dt)
+            return dt.astimezone(IST).strftime(fmt)
         elif isinstance(val, str):
             val = val.strip()
             if not val or val.lower() in ("nan", "none"):
                 return datetime.now(IST).strftime(fmt)
-            elif "T" in val:
+            elif "T" in val and ("Z" in val or "+" in val):
                 dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
                 return dt.astimezone(IST).strftime(fmt)
+            elif "T" in val:
+                dt = datetime.fromisoformat(val)
+                dt = IST.localize(dt)
+                return dt.astimezone(IST).strftime(fmt)
+            elif " " in val and "-" in val:
+                try:
+                    dt = datetime.strptime(val, "%Y-%m-%d %H:%M")
+                except Exception:
+                    dt = datetime.strptime(val, "%Y-%m-%d %H:%M:%S")
+                return IST.localize(dt).strftime(fmt)
             elif "/" in val:
                 try:
-                    return datetime.strptime(val, "%m/%d/%Y %H:%M:%S").strftime(fmt)
-                except Exception:
-                    return datetime.strptime(val, "%m/%d/%Y").replace(
-                        hour=datetime.now(IST).hour,
-                        minute=datetime.now(IST).minute
-                    ).strftime(fmt)
-            elif "-" in val:
-                try:
-                    return datetime.strptime(val, "%d-%m-%Y %H:%M:%S").strftime(fmt)
+                    dt = datetime.strptime(val, "%m/%d/%Y %H:%M:%S")
                 except Exception:
                     try:
-                        return datetime.strptime(val, "%Y-%m-%d %H:%M:%S").strftime(fmt)
+                        dt = datetime.strptime(val, "%m/%d/%Y %H:%M")
+                    except Exception:
+                        dt = datetime.strptime(val, "%m/%d/%Y")
+                return IST.localize(dt).strftime(fmt)
+            elif "-" in val:
+                try:
+                    dt = datetime.strptime(val.split(" ")[0], "%d-%m-%Y")
+                except Exception:
+                    dt = datetime.strptime(val.split(" ")[0], "%Y-%m-%d")
+                if " " in val:
+                    try:
+                        t = datetime.strptime(val.split(" ")[1], "%H:%M:%S").time()
                     except Exception:
                         try:
-                            return datetime.strptime(val.split(" ")[0], "%d-%m-%Y").replace(
-                                hour=datetime.now(IST).hour,
-                                minute=datetime.now(IST).minute
-                            ).strftime(fmt)
+                            t = datetime.strptime(val.split(" ")[1], "%H:%M").time()
                         except Exception:
-                            return datetime.strptime(val.split(" ")[0], "%Y-%m-%d").replace(
-                                hour=datetime.now(IST).hour,
-                                minute=datetime.now(IST).minute
-                            ).strftime(fmt)
+                            t = datetime.now(IST).time()
+                    dt = datetime.combine(dt.date(), t)
+                else:
+                    dt = dt.replace(
+                        hour=datetime.now(IST).hour,
+                        minute=datetime.now(IST).minute
+                    )
+                return IST.localize(dt).strftime(fmt)
             else:
                 return datetime.now(IST).strftime(fmt)
         else:
             return datetime.now(IST).strftime(fmt)
     except Exception:
         return datetime.now(IST).strftime(fmt)
+
+def parse_date_for_today_check(val) -> str:
+    """
+    Parse date to just YYYY-MM-DD in IST for today comparison.
+    """
+    try:
+        full = parse_date_to_str(val)
+        return full[:10]
+    except Exception:
+        return datetime.now(IST).strftime("%Y-%m-%d")
+
+def get_today_ist() -> str:
+    """Get today's date in IST as YYYY-MM-DD."""
+    return datetime.now(IST).strftime("%Y-%m-%d")
 
 # ─── GOOGLE SHEET CLIENT ──────────────────────────────────────────────────────
 
@@ -153,7 +239,7 @@ def get_sheet():
         raw = os.getenv("GOOGLE_CREDENTIALS_JSON")
         sid = os.getenv("GOOGLE_SHEET_ID")
         if not raw or not sid:
-            log.error("Missing GOOGLE_CREDENTIALS_JSON or GOOGLE_SHEET_ID")
+            log.error("Missing Google env vars")
             return None
 
         creds = Credentials.from_service_account_info(
@@ -170,7 +256,7 @@ def get_sheet():
         log.error(f"Google auth error: {e}", exc_info=True)
         return None
 
-# ─── EVENTS TAB MANAGEMENT ────────────────────────────────────────────────────
+# ─── EVENTS TAB ──────────────────────────────────────────────────────────────
 
 EVENTS_HEADERS = [
     "order_id", "event_name", "event_time", "value", "currency",
@@ -178,29 +264,20 @@ EVENTS_HEADERS = [
 ]
 
 def ensure_events_tab(sh):
-    """
-    Create Events tab if it doesn't exist.
-    Set headers and formatting.
-    Returns worksheet object.
-    """
+    """Create Events tab if needed. Returns worksheet."""
     try:
         ws = sh.worksheet("Events")
     except Exception:
-        # Tab doesn't exist — create it
         ws = sh.add_worksheet(title="Events", rows=1000, cols=12)
         log.info("Created 'Events' tab")
 
-    # Check if headers already set
     try:
         first_cell = ws.cell(1, 1).value
     except Exception:
         first_cell = None
 
     if not first_cell or first_cell != "order_id":
-        # Write headers
         ws.update('A1', [EVENTS_HEADERS])
-
-        # Style header row
         ws.format('A1:L1', {
             "backgroundColor": {"red": 0.1, "green": 0.3, "blue": 0.7},
             "textFormat": {
@@ -209,23 +286,23 @@ def ensure_events_tab(sh):
             },
             "horizontalAlignment": "CENTER",
         })
-
-        # Format phone column (H) as TEXT to prevent scientific notation
-        ws.format('H2:H1000', {
-            "numberFormat": {"type": "TEXT"}
-        })
-
         log.info("Events headers written")
 
     return ws
 
-# ─── FORMAT ORDER FOR EVENTS SHEET ────────────────────────────────────────────
+def get_existing_event_ids(ws) -> set:
+    """Get all order_ids already in Events tab."""
+    try:
+        ids = set(ws.col_values(1))
+        ids.discard("")
+        return ids
+    except Exception:
+        return set()
+
+# ─── FORMAT ORDER ROW ────────────────────────────────────────────────────────
 
 def order_to_event_row(order: dict) -> list:
-    """
-    Convert an order dict to a clean Events row list.
-    Phone stored as string (not number) to avoid 9.35E+09.
-    """
+    """Convert order dict to Events sheet row with IST time."""
     name = order.get("customer_name", "")
     parts = name.strip().split()
     fn = parts[0] if parts else ""
@@ -245,32 +322,28 @@ def order_to_event_row(order: dict) -> list:
     except Exception:
         value = 0
 
-    # Get date string
     created = order.get("created_at", "")
     date_str = parse_date_to_str(created)
 
     return [
-        f"OBX_{order_num}",                              # order_id
-        "Purchase",                                       # event_name
-        date_str,                                         # event_time
-        value,                                            # value
-        "INR",                                            # currency
-        fn.lower() if fn and is_ascii(fn) else "",        # fn
-        ln.lower() if ln and is_ascii(ln) else "",        # ln
-        phone,                                            # phone (string!)
-        city,                                             # ct
-        state,                                            # st
-        pincode,                                          # zip
-        "in",                                             # country
+        f"OBX_{order_num}",
+        "Purchase",
+        date_str,
+        value,
+        "INR",
+        fn.lower() if fn and is_ascii(fn) else "",
+        ln.lower() if ln and is_ascii(ln) else "",
+        phone,
+        city,
+        state,
+        pincode,
+        "in",
     ]
 
-# ─── WRITE SINGLE ORDER TO EVENTS TAB ─────────────────────────────────────────
+# ─── WRITE SINGLE ORDER ──────────────────────────────────────────────────────
 
 def write_event_to_sheet(order: dict) -> bool:
-    """
-    Write a single order to Events tab.
-    Called after each order creation by bot_enhanced.py.
-    """
+    """Write a single order to Events tab. No duplicates."""
     try:
         sh = get_sheet()
         if not sh:
@@ -279,44 +352,32 @@ def write_event_to_sheet(order: dict) -> bool:
 
         ws = ensure_events_tab(sh)
 
-        # Check for duplicate
         order_num = str(order.get("order_number", ""))
         event_id = f"OBX_{order_num}"
 
-        try:
-            existing_ids = ws.col_values(1)  # column A
-        except Exception:
-            existing_ids = []
-
+        existing_ids = get_existing_event_ids(ws)
         if event_id in existing_ids:
-            log.info(f"Event {event_id} already in Events tab, skipping")
+            log.info(f"Duplicate skipped: {event_id}")
             return True
 
-        # Format the row
         row = order_to_event_row(order)
 
-        # Phone as string with prefix to force text
-        phone_str = str(row[7])
-        row[7] = phone_str
-
-        # Append row using RAW so phone stays as text
         ws.append_rows([row], value_input_option="RAW")
 
-        # Get the new row number and force phone as text
-        new_row_num = len(existing_ids) + 1
-        ws.update(f'H{new_row_num}', f'"{phone_str}"')
+        new_row = len(existing_ids) + 1
+        ws.update(f'H{new_row}', f'"{str(row[7])}"')
 
-        log.info(f"Wrote {event_id} to Events tab (row {new_row_num})")
+        log.info(f"Wrote {event_id} to Events tab")
         return True
 
     except Exception as e:
         log.error(f"Write event error: {e}", exc_info=True)
         return False
 
-# ─── META API UPLOAD ──────────────────────────────────────────────────────────
+# ─── META UPLOAD ─────────────────────────────────────────────────────────────
 
 def order_to_meta_event(order: dict) -> dict:
-    """Convert an order dict to Meta offline event format."""
+    """Convert order to Meta event with UTC/GMT time."""
     name = order.get("customer_name", "")
     parts = name.strip().split()
     fn = parts[0] if parts else ""
@@ -364,7 +425,7 @@ def order_to_meta_event(order: dict) -> dict:
     }
 
 def upload_single_to_meta(order: dict) -> str:
-    """Upload a single order to Meta API. Returns status message."""
+    """Upload single order to Meta API."""
     access_token = os.getenv("META_ACCESS_TOKEN")
     dataset_id   = os.getenv("META_DATASET_ID")
 
@@ -388,57 +449,18 @@ def upload_single_to_meta(order: dict) -> str:
             return f"✅ Meta: {count} event uploaded"
         else:
             err = resp.get("error", {}).get("message", str(resp))
-            log.error(f"Meta API error: {err}")
+            log.error(f"Meta error: {err}")
             return f"⚠️ Meta: {err[:100]}"
     except Exception as e:
         log.error(f"Meta upload exception: {e}")
         return f"❌ Meta upload failed"
 
-def upload_batch_to_meta(events: list) -> dict:
-    """Upload multiple events to Meta. Returns summary."""
-    access_token = os.getenv("META_ACCESS_TOKEN")
-    dataset_id   = os.getenv("META_DATASET_ID")
-
-    if not access_token or not dataset_id:
-        return {"error": "META_ACCESS_TOKEN or META_DATASET_ID not set", "total": len(events), "success": 0, "errors": ["env vars missing"]}
-
-    url     = f"https://graph.facebook.com/{META_API_VERSION}/{dataset_id}/events"
-    total   = len(events)
-    success = 0
-    errors  = []
-
-    BATCH = 50
-    for i in range(0, total, BATCH):
-        chunk = events[i:i + BATCH]
-        payload = {
-            "data":         json.dumps(chunk),
-            "access_token": access_token,
-        }
-        try:
-            r = requests.post(url, data=payload, timeout=30)
-            resp = r.json()
-            if r.status_code == 200 and "events_received" in resp:
-                batch_count = resp.get("events_received", 0)
-                success += batch_count
-                log.info(f"Meta batch {i//BATCH + 1}: {batch_count} received")
-            else:
-                err = resp.get("error", {}).get("message", str(resp))
-                errors.append(err)
-                log.error(f"Meta batch {i//BATCH + 1} error: {err}")
-        except Exception as e:
-            errors.append(str(e))
-            log.error(f"Meta batch {i//BATCH + 1} exception: {e}")
-
-    return {"total": total, "success": success, "errors": errors}
-
-# ─── SINGLE ORDER PIPELINE ────────────────────────────────────────────────────
+# ─── SINGLE ORDER PIPELINE ───────────────────────────────────────────────────
 
 def process_new_order(order: dict) -> str:
     """
-    Called right after a new order is created in the bot.
-    1. Writes clean row to Events tab in Google Sheet
-    2. Uploads to Meta Offline Events Dataset
-    Returns a short status message for Telegram confirmation.
+    Called after each order creation.
+    Writes to Events tab + uploads to Meta.
     """
     order_num = order.get("order_number", "???")
     name = order.get("customer_name", "")
@@ -446,30 +468,26 @@ def process_new_order(order: dict) -> str:
 
     lines = [f"📦 #{order_num} {name} ({phone})"]
 
-    # Step 1: Write to Events tab
     sheet_ok = write_event_to_sheet(order)
-    if sheet_ok:
-        lines.append("📋 Events tab: ✅")
-    else:
-        lines.append("📋 Events tab: ⚠️ skipped")
+    lines.append("📋 Events: ✅" if sheet_ok else "📋 Events: ⚠️ skipped")
 
-    # Step 2: Upload to Meta
     meta_msg = upload_single_to_meta(order)
     lines.append(f"📤 {meta_msg}")
 
     return "\n".join(lines)
 
-# ─── FULL DAILY BACKUP ────────────────────────────────────────────────────────
+# ─── DAILY BACKUP — TODAY ONLY ───────────────────────────────────────────────
 
 def run_upload() -> str:
     """
-    Full daily backup: read Orders tab → find any not in Events tab
-    → write missing to Events tab → upload to Meta.
-    This catches anything that was missed during the day.
-    Runs automatically at 11 PM IST.
+    Daily 11 PM backup:
+    Read Orders tab → find TODAY's orders not in Events tab
+    → write to Events tab → upload to Meta.
+    Only today's orders. No duplicates. No old orders.
     """
-    log.info("Daily backup upload: starting")
+    log.info("Daily backup: starting")
     uploaded = load_uploaded()
+    today_str = get_today_ist()
 
     try:
         sh = get_sheet()
@@ -480,37 +498,37 @@ def run_upload() -> str:
         try:
             orders_ws = sh.worksheet("Orders")
             orders_rows = orders_ws.get_all_records()
-            log.info(f"Read {len(orders_rows)} rows from Orders tab")
+            log.info(f"Read {len(orders_rows)} rows from Orders")
         except Exception as e:
             return f"❌ Could not read Orders tab: {e}"
 
-        # Get or create Events tab
+        # Get Events tab
         events_ws = ensure_events_tab(sh)
+        existing_ids = get_existing_event_ids(events_ws)
 
-        # Get existing event IDs from Events tab (column A)
-        try:
-            existing_ids = set(events_ws.col_values(1))
-            existing_ids.discard("")
-        except Exception:
-            existing_ids = set()
+        log.info(f"Events tab: {len(existing_ids)} entries | Today: {today_str}")
 
-        log.info(f"Events tab has {len(existing_ids)} existing entries")
-
-        # Find orders not yet in Events tab
+        # Find TODAY's orders not yet in Events tab
         new_orders = []
         for row in orders_rows:
             num = str(row.get("Order#", "")).strip()
             if not num:
                 continue
+
             event_id = f"OBX_{num}"
             if event_id in existing_ids:
-                continue
+                continue  # Already in Events — skip
 
+            # Check if this order is from TODAY
+            order_date = parse_date_for_today_check(str(row.get("Date", "")))
+            if order_date != today_str:
+                continue  # Not today — skip
+
+            # Skip cancelled/RTO
             status = str(row.get("Status", "")).lower()
             if status in ("cancelled", "rto", "returned"):
                 continue
 
-            # Convert sheet row to order dict format
             order = {
                 "order_number":  num,
                 "customer_name": row.get("Name", ""),
@@ -526,39 +544,67 @@ def run_upload() -> str:
             new_orders.append(order)
 
         if not new_orders:
-            return f"✅ No new orders to upload ({len(uploaded)} already tracked)"
+            return (
+                f"✅ No new today orders to upload\n"
+                f"📅 Date: {today_str}\n"
+                f"🗂 Total in Events: {len(existing_ids)}"
+            )
 
-        log.info(f"Backup: {len(new_orders)} orders to process")
+        log.info(f"Backup: {len(new_orders)} TODAY orders to process")
 
-        # Write to Events tab and collect Meta events
-        meta_events = []
         written = 0
+        meta_events = []
         for order in new_orders:
             if write_event_to_sheet(order):
                 written += 1
             meta_events.append(order_to_meta_event(order))
 
         # Batch upload to Meta
-        result = upload_batch_to_meta(meta_events)
+        access_token = os.getenv("META_ACCESS_TOKEN")
+        dataset_id   = os.getenv("META_DATASET_ID")
+        success = 0
+        errors  = []
+
+        if access_token and dataset_id and meta_events:
+            url = f"https://graph.facebook.com/{META_API_VERSION}/{dataset_id}/events"
+            BATCH = 50
+            for i in range(0, len(meta_events), BATCH):
+                chunk = meta_events[i:i + BATCH]
+                payload = {
+                    "data":         json.dumps(chunk),
+                    "access_token": access_token,
+                }
+                try:
+                    r = requests.post(url, data=payload, timeout=30)
+                    resp = r.json()
+                    if r.status_code == 200 and "events_received" in resp:
+                        bc = resp.get("events_received", 0)
+                        success += bc
+                        log.info(f"Meta batch: {bc} received")
+                    else:
+                        err = resp.get("error", {}).get("message", str(resp))
+                        errors.append(err)
+                except Exception as e:
+                    errors.append(str(e))
 
         # Mark as uploaded
-        if result.get("success", 0) > 0:
-            for order in new_orders[:result["success"]]:
+        if success > 0:
+            for order in new_orders[:success]:
                 uploaded.add(str(order.get("order_number", "")))
             save_uploaded(uploaded)
 
-        # Build summary
         now_str = datetime.now(IST).strftime("%d %b %Y %H:%M")
         lines = [
-            f"📊 *Daily Meta Backup — {now_str} IST*",
+            f"📊 *Daily Backup — {now_str} IST*",
+            f"📅 Date: {today_str}",
             f"",
             f"📋 Events written: {written}",
-            f"📤 Meta uploaded: {result.get('success', 0)}/{result.get('total', 0)}",
-            f"🗂 Total tracked: {len(uploaded)}",
+            f"📤 Meta uploaded: {success}/{len(meta_events)}",
+            f"🗂 Total in Events: {len(existing_ids) + written}",
         ]
-        if result.get("errors"):
-            lines.append(f"⚠️ Errors: {len(result['errors'])}")
-            for e in result["errors"][:3]:
+        if errors:
+            lines.append(f"⚠️ Errors: {len(errors)}")
+            for e in errors[:3]:
                 lines.append(f"  • {e[:80]}")
 
         return "\n".join(lines)
