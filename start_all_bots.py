@@ -38,15 +38,14 @@ def check_environment():
     log.info("🔍 Checking environment setup...")
 
     required_vars = [
-        ("BOT_TOKEN", "First shipping bot token"),
-        ("BOT_TOKEN_2", "Main shipping bot token"),
-        ("GOOGLE_CREDENTIALS_JSON", "Google Sheets credentials"),
-        ("GOOGLE_SHEET_ID", "Google Sheet ID"),
-        ("SHIPROCKET_EMAIL", "Shiprocket email"),
-        ("SHIPROCKET_PASSWORD", "Shiprocket password"),
-        ("META_ACCESS_TOKEN", "Meta access token (for uploader)"),
-        ("META_DATASET_ID", "Meta offline event set ID"),
-        ("ADMIN_CHAT_ID", "Your Telegram chat ID for daily upload result"),
+        ("BOT_TOKEN",              "First shipping bot token"),
+        ("BOT_TOKEN_2",            "Main shipping bot token"),
+        ("GOOGLE_CREDENTIALS_JSON","Google Sheets credentials"),
+        ("GOOGLE_SHEET_ID",        "Google Sheet ID"),
+        ("SHIPROCKET_EMAIL",       "Shiprocket email"),
+        ("SHIPROCKET_PASSWORD",    "Shiprocket password"),
+        ("META_ACCESS_TOKEN",      "Meta access token (for uploader)"),
+        ("META_DATASET_ID",        "Meta offline event set ID"),
     ]
 
     missing = []
