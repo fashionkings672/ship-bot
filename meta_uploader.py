@@ -1,16 +1,10 @@
 """
 meta_uploader.py — Oneboxx Meta Offline Events Uploader
-Reads new orders from Google Sheet → uploads to Facebook Offline Events API daily.
+Auto-creates 'Events' tab, writes clean formatted data,
+and uploads to Facebook Offline Events API.
 
-ENV VARS NEEDED (add to Railway):
-  META_ACCESS_TOKEN   — your Meta system user / page access token
-  META_DATASET_ID     — Offline Event Set ID from Events Manager → Settings
-  (reuses GOOGLE_CREDENTIALS_JSON and GOOGLE_SHEET_ID from ship bot)
-
-USAGE:
-  - Called automatically daily at 11:00 PM IST via scheduler
-  - Or manually via /uploadfb Telegram command
-  - Tracks uploaded orders in meta_uploaded.json to avoid duplicates
+Called automatically after each order creation.
+Also runs daily at 11 PM IST as backup.
 """
 
 import os
@@ -30,7 +24,6 @@ IST              = pytz.timezone("Asia/Kolkata")
 # ─── TRACKING ─────────────────────────────────────────────────────────────────
 
 def load_uploaded():
-    """Load set of already-uploaded order numbers."""
     if not os.path.exists(UPLOADED_FILE):
         return set()
     try:
@@ -45,22 +38,18 @@ def save_uploaded(uploaded: set):
 
 # ─── DATA HELPERS ─────────────────────────────────────────────────────────────
 
-# Kannada → English city/state map
-KANNADA_MAP = {
-    "ಚಿತ್ರದುರ್ಗ": "chitradurga",
-    "ಕರ್ನಾಟಕ":    "karnataka",
-    "ಗುರು":       "guru",
-    "ಬೆಂಗಳೂರು":   "bengaluru",
-    "ಮೈಸೂರು":     "mysuru",
-    "ಹಾಸನ":       "hassan",
-    "ತುಮಕೂರು":    "tumkur",
-    "ಮಂಡ್ಯ":       "mandya",
-    "ಶಿವಮೊಗ್ಗ":   "shimoga",
+PINCODE_STATE = {
+    "560":"karnataka","577":"karnataka","576":"karnataka","563":"karnataka",
+    "561":"karnataka","580":"karnataka","590":"karnataka","581":"karnataka",
+    "582":"karnataka","583":"karnataka","584":"karnataka","585":"karnataka",
+    "518":"telangana","500":"telangana","501":"telangana","502":"telangana",
+    "600":"tamil nadu","601":"tamil nadu","602":"tamil nadu","603":"tamil nadu",
+    "604":"tamil nadu","605":"tamil nadu","606":"tamil nadu","607":"tamil nadu",
+    "608":"tamil nadu","625":"tamil nadu","626":"tamil nadu","627":"tamil nadu",
+    "682":"kerala","683":"kerala","685":"kerala","690":"kerala","691":"kerala",
+    "400":"maharashtra","410":"maharashtra","411":"maharashtra","412":"maharashtra",
+    "110":"delhi","120":"haryana","201":"uttar pradesh","226":"uttar pradesh",
 }
-
-def fix_text(s: str) -> str:
-    s = str(s).strip()
-    return KANNADA_MAP.get(s, s).lower()
 
 def is_ascii(s: str) -> bool:
     return all(ord(c) < 128 for c in str(s))
@@ -71,54 +60,28 @@ def clean_phone(p) -> str:
 
 def clean_zip(z) -> str:
     try:
-        return str(int(z)).zfill(6)
+        return str(int(float(z))).zfill(6)
     except Exception:
         return ""
 
-def split_name(name: str):
-    parts = fix_text(name).split()
-    fn = parts[0] if parts else ""
-    ln = " ".join(parts[1:]) if len(parts) > 1 else ""
-    return fn, ln
+def guess_state(pincode: str) -> str:
+    return PINCODE_STATE.get(str(pincode).strip()[:3], "karnataka")
 
 def parse_date_to_iso(val) -> str:
-    """
-    Handles both datetime objects (from Excel/Sheet) and strings.
-    Returns UTC ISO8601 string: 2026-03-07T13:11:59Z
-    """
     try:
         if isinstance(val, datetime):
-            # Sheet may give datetime(2026, 9, 3) meaning month=9=Sep, day=3
-            # BUT original data is DD-MM stored as MM-DD by Excel → swap
-            # Check if month > 12 (impossible) or if it looks swapped
-            # Safe approach: treat as-is if it's already a proper datetime from gspread
-            if val.month > 12:
-                # impossible — must be swapped
-                actual = datetime(val.year, val.day, val.month, 12, 0, 0)
-            else:
-                actual = val.replace(hour=12) if val.hour == 0 else val
+            actual = val
         elif isinstance(val, str):
             val = val.strip()
-            if not val or val.lower() in ("nan", "none", ""):
+            if not val or val.lower() in ("nan", "none"):
                 actual = datetime.now()
             elif "T" in val:
-                # Already ISO
                 actual = datetime.fromisoformat(val.replace("Z", "+00:00"))
                 return actual.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             elif "/" in val:
-                # M/D/YYYY
                 actual = datetime.strptime(val, "%m/%d/%Y").replace(hour=12)
             elif "-" in val:
-                parts = val.split(" ")[0].split("-")
-                a, b = int(parts[0]), int(parts[1])
-                time_part = val.split(" ")[1] if " " in val else "12:00:00"
-                if b > 12:
-                    fmt = f"{parts[2]}-{a:02d}-{b:02d} {time_part}"
-                    actual = datetime.strptime(fmt, "%Y-%m-%d %H:%M:%S") if len(parts[2]) == 4 else \
-                             datetime.strptime(f"{b:02d}-{a:02d}-{parts[2]} {time_part}", "%d-%m-%Y %H:%M:%S")
-                else:
-                    actual = datetime.strptime(val, "%d-%m-%Y %H:%M:%S") if len(parts[0]) <= 2 else \
-                             datetime.strptime(val, "%Y-%m-%d %H:%M:%S")
+                actual = datetime.strptime(val.split(" ")[0], "%d-%m-%Y").replace(hour=12)
             else:
                 actual = datetime.now()
         else:
@@ -126,18 +89,14 @@ def parse_date_to_iso(val) -> str:
 
         dt_ist = IST.localize(actual) if actual.tzinfo is None else actual
         return dt_ist.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
     except Exception as e:
-        log.warning(f"Date parse failed for '{val}': {e}")
+        log.warning(f"Date parse failed: {e}")
         return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-# ─── SHEET READER ─────────────────────────────────────────────────────────────
+# ─── GOOGLE SHEET CLIENT ──────────────────────────────────────────────────────
 
-def read_sheet_orders():
-    """
-    Read all rows from Google Sheet 'Orders' tab.
-    Returns list of raw row dicts.
-    """
+def get_sheet():
+    """Get Google Sheet object."""
     try:
         import gspread
         from google.oauth2.service_account import Credentials
@@ -145,8 +104,8 @@ def read_sheet_orders():
         raw = os.getenv("GOOGLE_CREDENTIALS_JSON")
         sid = os.getenv("GOOGLE_SHEET_ID")
         if not raw or not sid:
-            log.error("Missing GOOGLE_CREDENTIALS_JSON or GOOGLE_SHEET_ID")
-            return []
+            log.error("Missing Google env vars")
+            return None
 
         creds = Credentials.from_service_account_info(
             json.loads(raw),
@@ -156,34 +115,186 @@ def read_sheet_orders():
             ]
         )
         gc = gspread.authorize(creds)
-        sh = gc.open_by_key(sid)
-        ws = sh.worksheet("Orders")
-        rows = ws.get_all_records()
-        log.info(f"Sheet: {len(rows)} rows read")
-        return rows
+        return gc.open_by_key(sid)
 
     except Exception as e:
-        log.error(f"Sheet read error: {e}", exc_info=True)
-        return []
+        log.error(f"Google auth error: {e}", exc_info=True)
+        return None
 
-# ─── FORMAT EVENTS ────────────────────────────────────────────────────────────
+# ─── EVENTS TAB MANAGEMENT ────────────────────────────────────────────────────
 
-def row_to_event(row: dict, order_num: str) -> dict:
-    """Convert a sheet row to a Meta offline event dict."""
-    fn, ln = split_name(row.get("Name", ""))
-    phone  = clean_phone(row.get("Phone", ""))
-    city   = fix_text(row.get("City", ""))
-    state  = fix_text(row.get("State", ""))
-    zipc   = clean_zip(row.get("Pincode", ""))
-    event_time = parse_date_to_iso(row.get("Date", ""))
+EVENTS_HEADERS = [
+    "order_id", "event_name", "event_time", "value", "currency",
+    "fn", "ln", "phone", "ct", "st", "zip", "country",
+]
 
-    # Value — use Total column
+def ensure_events_tab(sh):
+    """Create Events tab if it doesn't exist. Returns worksheet."""
     try:
-        value = float(str(row.get("Total", 0) or 0))
-    except Exception:
-        value = 0.0
+        ws = sh.worksheet("Events")
+        # Check if headers exist
+        existing = ws.row_values(1)
+        if not existing or len(existing) < 5:
+            ws.update('A1', [EVENTS_HEADERS])
+            ws.format('A1:L1', {
+                "backgroundColor": {"red": 0.1, "green": 0.3, "blue": 0.7},
+                "textFormat": {
+                    "bold": True,
+                    "foregroundColor": {"red": 1, "green": 1, "blue": 1}
+                },
+                "horizontalAlignment": "CENTER",
+            })
+            # Set column widths
+            ws.update_col_width(1, 150)   # order_id
+            ws.update_col_width(2, 100)   # event_name
+            ws.update_col_width(3, 110)   # event_time
+            ws.update_col_width(4, 80)    # value
+            ws.update_col_width(5, 70)    # currency
+            ws.update_col_width(6, 100)   # fn
+            ws.update_col_width(7, 100)   # ln
+            ws.update_col_width(8, 120)   # phone
+            ws.update_col_width(9, 100)   # ct
+            ws.update_col_width(10, 100)  # st
+            ws.update_col_width(11, 80)   # zip
+            ws.update_col_width(12, 70)   # country
+        return ws
 
-    # Only include non-empty ASCII fields in user_data
+    except Exception:
+        # Tab doesn't exist — create it
+        ws = sh.add_worksheet(title="Events", rows=1000, cols=12)
+        ws.update('A1', [EVENTS_HEADERS])
+        ws.format('A1:L1', {
+            "backgroundColor": {"red": 0.1, "green": 0.3, "blue": 0.7},
+            "textFormat": {
+                "bold": True,
+                "foregroundColor": {"red": 1, "green": 1, "blue": 1}
+            },
+            "horizontalAlignment": "CENTER",
+        })
+        log.info("Created 'Events' tab")
+        return ws
+
+def order_to_event_row(order: dict) -> list:
+    """
+    Convert an order dict (from bot) to a clean Events row.
+    This is called right after order creation.
+    """
+    name = order.get("customer_name", "")
+    parts = name.strip().split()
+    fn = parts[0] if parts else ""
+    ln = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+    phone  = clean_phone(order.get("phone", ""))
+    city   = str(order.get("city", "")).strip().lower()
+    state  = str(order.get("state", "")).strip().lower()
+    pincode = clean_zip(order.get("pincode", ""))
+    order_num = str(order.get("order_number", ""))
+    created = order.get("created_at", "")
+
+    if not state:
+        state = guess_state(pincode)
+
+    try:
+        value = int(float(order.get("cod_amount", 0) or order.get("total", 0) or 0))
+    except Exception:
+        value = 0
+
+    # Parse created_at to date string
+    if created:
+        try:
+            dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            date_str = dt.strftime("%Y-%m-%d")
+        except Exception:
+            date_str = datetime.now().strftime("%Y-%m-%d")
+    else:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
+    return [
+        f"OBX_{order_num}",                       # order_id
+        "Purchase",                                # event_name
+        date_str,                                  # event_time
+        value,                                     # value
+        "INR",                                     # currency
+        fn.lower() if fn and is_ascii(fn) else "", # fn
+        ln.lower() if ln and is_ascii(ln) else "", # ln
+        phone,                                     # phone
+        city,                                      # ct
+        state,                                     # st
+        pincode,                                   # zip
+        "in",                                      # country
+    ]
+
+def write_event_to_sheet(order: dict) -> bool:
+    """Write a single order to Events tab. Called after each order creation."""
+    try:
+        sh = get_sheet()
+        if not sh:
+            return False
+
+        ws = ensure_events_tab(sh)
+
+        # Check for duplicate order_id
+        order_num = str(order.get("order_number", ""))
+        event_id = f"OBX_{order_num}"
+
+        existing_ids = ws.col_values(1)  # column A = order_id
+        if event_id in existing_ids:
+            log.info(f"Event {event_id} already in Events tab, skipping")
+            return True
+
+        # Format the row
+        row = order_to_event_row(order)
+
+        # Append row
+        ws.append_rows([row], value_input_option="USER_ENTERED")
+
+        # Format phone column as text (column H)
+        new_row = len(existing_ids) + 1
+        ws.format(f"H{new_row}:H{new_row}", {
+            "numberFormat": {"type": "TEXT"}
+        })
+
+        log.info(f"Wrote event {event_id} to Events tab")
+        return True
+
+    except Exception as e:
+        log.error(f"Write event error: {e}", exc_info=True)
+        return False
+
+# ─── META API UPLOAD ──────────────────────────────────────────────────────────
+
+def order_to_meta_event(order: dict) -> dict:
+    """Convert an order dict to Meta offline event format."""
+    name = order.get("customer_name", "")
+    parts = name.strip().split()
+    fn = parts[0] if parts else ""
+    ln = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+    phone   = clean_phone(order.get("phone", ""))
+    city    = str(order.get("city", "")).strip().lower()
+    state   = str(order.get("state", "")).strip().lower()
+    pincode = clean_zip(order.get("pincode", ""))
+    order_num = str(order.get("order_number", ""))
+    created = order.get("created_at", "")
+
+    if not state:
+        state = guess_state(pincode)
+
+    try:
+        value = int(float(order.get("cod_amount", 0) or order.get("total", 0) or 0))
+    except Exception:
+        value = 0
+
+    # Event time in UTC ISO format
+    if created:
+        try:
+            dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            event_time = dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            event_time = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    else:
+        event_time = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     user_data = {}
     if phone and len(phone) == 10:
         user_data["ph"] = [phone]
@@ -195,56 +306,57 @@ def row_to_event(row: dict, order_num: str) -> dict:
         user_data["ct"] = [city]
     if state and is_ascii(state):
         user_data["st"] = [state]
-    if zipc:
-        user_data["zp"] = [zipc]
+    if pincode:
+        user_data["zp"] = [pincode]
     user_data["country"] = ["in"]
 
     return {
-        "event_name":  "Purchase",
-        "event_time":  event_time,
-        "event_id":    f"OBX_{order_num}",   # unique dedup key
-        "currency":    "INR",
-        "value":       value,
-        "user_data":   user_data,
+        "event_name": "Purchase",
+        "event_time": event_time,
+        "event_id":   f"OBX_{order_num}",
+        "currency":   "INR",
+        "value":      value,
+        "user_data":  user_data,
     }
 
-def format_events_batch(rows: list, uploaded: set) -> tuple[list, list]:
-    """
-    Returns (events_to_upload, order_nums_to_mark).
-    Skips already-uploaded orders.
-    """
-    events   = []
-    new_nums = []
-
-    for row in rows:
-        num = str(row.get("Order#", "")).strip()
-        if not num or num in uploaded:
-            continue
-
-        # Skip cancelled orders
-        status = str(row.get("Status", "")).lower()
-        if status in ("cancelled", "rto", "returned"):
-            continue
-
-        evt = row_to_event(row, num)
-        events.append(evt)
-        new_nums.append(num)
-
-    return events, new_nums
-
-# ─── META API UPLOAD ──────────────────────────────────────────────────────────
-
-def upload_to_meta(events: list) -> dict:
-    """
-    Upload events to Meta Offline Events API.
-    Batches in groups of 50 (Meta limit).
-    Returns summary dict.
-    """
+def upload_single_to_meta(order: dict) -> str:
+    """Upload a single order to Meta API. Returns status message."""
     access_token = os.getenv("META_ACCESS_TOKEN")
     dataset_id   = os.getenv("META_DATASET_ID")
 
     if not access_token or not dataset_id:
-        return {"error": "META_ACCESS_TOKEN or META_DATASET_ID not set in Railway env vars"}
+        return "⚠️ Meta env vars not set"
+
+    event = order_to_meta_event(order)
+    url = f"https://graph.facebook.com/{META_API_VERSION}/{dataset_id}/events"
+
+    payload = {
+        "data":         json.dumps([event]),
+        "access_token": access_token,
+    }
+
+    try:
+        r = requests.post(url, data=payload, timeout=30)
+        resp = r.json()
+        if r.status_code == 200 and "events_received" in resp:
+            count = resp.get("events_received", 0)
+            log.info(f"Meta: {count} event uploaded for {event['event_id']}")
+            return f"✅ Meta: {count} event uploaded"
+        else:
+            err = resp.get("error", {}).get("message", str(resp))
+            log.error(f"Meta error: {err}")
+            return f"⚠️ Meta: {err[:80]}"
+    except Exception as e:
+        log.error(f"Meta upload exception: {e}")
+        return f"❌ Meta upload failed"
+
+def upload_batch_to_meta(events: list) -> dict:
+    """Upload multiple events to Meta. Returns summary."""
+    access_token = os.getenv("META_ACCESS_TOKEN")
+    dataset_id   = os.getenv("META_DATASET_ID")
+
+    if not access_token or not dataset_id:
+        return {"error": "META_ACCESS_TOKEN or META_DATASET_ID not set"}
 
     url     = f"https://graph.facebook.com/{META_API_VERSION}/{dataset_id}/events"
     total   = len(events)
@@ -263,61 +375,140 @@ def upload_to_meta(events: list) -> dict:
             resp = r.json()
             if r.status_code == 200 and "events_received" in resp:
                 success += resp.get("events_received", 0)
-                log.info(f"Batch {i//BATCH + 1}: {resp.get('events_received')} received")
             else:
-                err_msg = resp.get("error", {}).get("message", str(resp))
-                errors.append(err_msg)
-                log.error(f"Batch {i//BATCH + 1} error: {err_msg}")
+                err = resp.get("error", {}).get("message", str(resp))
+                errors.append(err)
         except Exception as e:
             errors.append(str(e))
-            log.error(f"Batch {i//BATCH + 1} exception: {e}")
 
-    return {
-        "total":   total,
-        "success": success,
-        "errors":  errors,
-    }
+    return {"total": total, "success": success, "errors": errors}
 
-# ─── MAIN ENTRY ───────────────────────────────────────────────────────────────
+# ─── SINGLE ORDER PIPELINE ────────────────────────────────────────────────────
+
+def process_new_order(order: dict) -> str:
+    """
+    Called right after a new order is created in the bot.
+    1. Writes clean row to Events tab
+    2. Uploads to Meta Dataset
+    Returns a short status message.
+    """
+    order_num = order.get("order_number", "???")
+    name = order.get("customer_name", "")
+    phone = order.get("phone", "")
+
+    lines = [f"📦 #{order_num} {name} ({phone})"]
+
+    # Step 1: Write to Events tab
+    sheet_ok = write_event_to_sheet(order)
+    if sheet_ok:
+        lines.append("📋 Events tab: ✅")
+    else:
+        lines.append("📋 Events tab: ⚠️ skipped")
+
+    # Step 2: Upload to Meta
+    meta_msg = upload_single_to_meta(order)
+    lines.append(f"📤 {meta_msg}")
+
+    return "\n".join(lines)
+
+# ─── FULL DAILY BACKUP ────────────────────────────────────────────────────────
 
 def run_upload() -> str:
     """
-    Full pipeline: read sheet → filter new → upload → mark done.
-    Returns a summary string (for Telegram message).
+    Full daily backup: read Orders tab → find any not in Events tab
+    → write missing to Events tab → upload to Meta.
+    This catches anything that was missed during the day.
     """
-    log.info("Meta upload: starting")
+    log.info("Daily backup upload: starting")
 
-    rows     = read_sheet_orders()
-    if not rows:
-        return "❌ Could not read Google Sheet"
+    try:
+        sh = get_sheet()
+        if not sh:
+            return "❌ Could not connect to Google Sheet"
 
-    uploaded = load_uploaded()
-    events, new_nums = format_events_batch(rows, uploaded)
+        # Read Orders tab
+        try:
+            orders_ws = sh.worksheet("Orders")
+            orders_rows = orders_ws.get_all_records()
+        except Exception as e:
+            return f"❌ Could not read Orders tab: {e}"
 
-    if not events:
-        return f"✅ No new orders to upload ({len(uploaded)} already uploaded)"
+        # Get or create Events tab
+        events_ws = ensure_events_tab(sh)
 
-    log.info(f"Uploading {len(events)} new events to Meta")
-    result = upload_to_meta(events)
+        # Get existing event IDs from Events tab
+        existing_ids = set(events_ws.col_values(1))  # column A
+        existing_ids.discard("")  # remove empty
 
-    if "error" in result:
-        return f"❌ Meta API error: {result['error']}"
+        # Find orders not yet in Events tab
+        new_orders = []
+        for row in orders_rows:
+            num = str(row.get("Order#", "")).strip()
+            if not num:
+                continue
+            event_id = f"OBX_{num}"
+            if event_id in existing_ids:
+                continue
 
-    # Mark as uploaded only if API accepted them
-    if result["success"] > 0:
-        uploaded.update(new_nums[:result["success"]])
-        save_uploaded(uploaded)
+            status = str(row.get("Status", "")).lower()
+            if status in ("cancelled", "rto", "returned"):
+                continue
 
-    lines = [
-        f"📊 *Meta Upload Done — {datetime.now(IST).strftime('%d %b %Y %H:%M')} IST*",
-        f"",
-        f"📦 New orders: {result['total']}",
-        f"✅ Uploaded: {result['success']}",
-        f"🗂 Total ever uploaded: {len(uploaded)}",
-    ]
-    if result["errors"]:
-        lines.append(f"⚠️ Errors: {len(result['errors'])}")
-        for e in result["errors"][:3]:
-            lines.append(f"  • {e[:80]}")
+            # Convert sheet row to order dict format
+            order = {
+                "order_number":  num,
+                "customer_name": row.get("Name", ""),
+                "phone":         str(row.get("Phone", "")),
+                "city":          row.get("City", ""),
+                "state":         row.get("State", ""),
+                "pincode":       str(row.get("Pincode", "")),
+                "product":       row.get("Product", ""),
+                "total":         row.get("Total", 0),
+                "cod_amount":    row.get("COD", row.get("Total", 0)),
+                "created_at":    str(row.get("Date", "")),
+            }
+            new_orders.append(order)
 
-    return "\n".join(lines)
+        if not new_orders:
+            uploaded = load_uploaded()
+            return f"✅ No new orders to upload ({len(uploaded)} already uploaded)"
+
+        log.info(f"Backup: {len(new_orders)} orders to process")
+
+        # Write to Events tab and collect Meta events
+        meta_events = []
+        written = 0
+        for order in new_orders:
+            if write_event_to_sheet(order):
+                written += 1
+            meta_events.append(order_to_meta_event(order))
+
+        # Batch upload to Meta
+        result = upload_batch_to_meta(meta_events)
+
+        # Mark as uploaded
+        if result.get("success", 0) > 0:
+            uploaded = load_uploaded()
+            for order in new_orders[:result["success"]]:
+                uploaded.add(str(order.get("order_number", "")))
+            save_uploaded(uploaded)
+
+        # Build summary
+        now_str = datetime.now(IST).strftime("%d %b %Y %H:%M")
+        lines = [
+            f"📊 *Daily Meta Backup — {now_str} IST*",
+            f"",
+            f"📋 Events written: {written}",
+            f"📤 Meta uploaded: {result.get('success', 0)}/{result.get('total', 0)}",
+            f"🗂 Total tracked: {len(uploaded) if 'uploaded' in dir() else '?'}",
+        ]
+        if result.get("errors"):
+            lines.append(f"⚠️ Errors: {len(result['errors'])}")
+            for e in result["errors"][:3]:
+                lines.append(f"  • {e[:80]}")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        log.error(f"Daily backup error: {e}", exc_info=True)
+        return f"❌ Backup failed: {e}"
