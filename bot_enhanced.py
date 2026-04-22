@@ -1,15 +1,10 @@
 """
 bot_enhanced.py — Oneboxx Ship Bot Final
-Changes:
-- State auto-fill from pincode if missing
-- Bulk rebook: direct execute if all found, confirm only if some missing
-- Duplicate customer check on create shipment
-- Monthly sheet tabs
-- Order counter from sheet max
-- Phone number normalization
-- FIXED: COD amount parsing (no hardcode to 2400)
-- FIXED: Courier charges hardcoded to ₹300
-- REMOVED: Bulk actions, Creative, Payment Report buttons
+Features:
+- Auto write to Google Sheet 'Events' tab on every order
+- Auto upload to Meta Offline Events Dataset
+- Daily 11 PM IST backup upload
+- /uploadfb manual upload command
 """
 import os, re, json, uuid, time, logging, asyncio, aiohttp, io
 import requests
@@ -18,6 +13,8 @@ from datetime import datetime, date, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, CallbackQueryHandler, filters
 import openai
+from meta_uploader import process_new_order, run_upload
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from orders_manager import (
     save_order, find_by_phone, find_by_awb, update_order, update_order_by_id,
     next_order_number, calc_cod, payment_status,
@@ -46,7 +43,6 @@ openai.api_key = OPENAI_API_KEY
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("bot")
 
-# Fixed courier charges
 COURIER_CHARGES = 300
 
 # ─── SHIPROCKET ───────────────────────────
@@ -262,14 +258,13 @@ Rules:
 
 Text:
 {text}"""
-    
+
     resp = openai.chat.completions.create(
         model="gpt-4",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.1
     )
     return resp.choices[0].message.content.strip()
-
 
 def parse_fields(text):
     data = {}
@@ -296,7 +291,8 @@ def order_action_kb(order_id, phone):
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     await update.message.reply_text(
-        "🚀 *Oneboxx Ship Bot*\n\n/adsspend /orders /report /setcreative",
+        "🚀 *Oneboxx Ship Bot*\n\n"
+        "/adsspend /orders /report /setcreative /uploadfb",
         parse_mode="Markdown", reply_markup=MAIN_KB)
 
 # ─── COMMANDS ─────────────────────────────
@@ -382,6 +378,15 @@ async def cmd_setcreative(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Usage: /setcreative <phone> <code>")
 
+# ── /uploadfb command ──
+async def cmd_uploadfb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("⏳ Running Meta upload...")
+    try:
+        result = run_upload()
+        await msg.edit_text(result, parse_mode="Markdown")
+    except Exception as e:
+        await msg.edit_text(f"❌ Upload failed: {e}")
+
 # ─── MESSAGE HANDLER ──────────────────────
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text  = update.message.text.strip()
@@ -404,7 +409,6 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if text == "📦 Products":
         ud.clear(); await show_products(update, ctx); return
 
-    # ── State machine ──
     if state == "create":
         await do_create(update, ctx, text); return
 
@@ -417,10 +421,8 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except:
             await update.message.reply_text("❌ Invalid amount. Enter number only (e.g. 2400):")
             return
-        
         ud["create_parsed"]["cod"] = str(int(cod_amount))
         ud["state"] = "create_creative"
-        d = ud["create_parsed"]
         await update.message.reply_text(
             f"✅ COD amount: ₹{int(cod_amount):,}\n\nEnter creative code (or type 'skip'):")
         return
@@ -480,13 +482,12 @@ async def do_create(update, ctx, text):
     try:
         parsed = ai_parse(text)
         d = parse_fields(parsed)
-        
+
         if not d.get("phone") or not d.get("pincode"):
             await msg.edit_text("❌ Missing phone or pincode.\n\nFormat:\nName\nPhone\nAddress, City\nPincode\nProduct\nCOD amount")
             ctx.user_data.clear()
             return
 
-        # Check if COD amount is missing
         cod_value = d.get("amount", "").strip().upper()
         if cod_value == "MISSING" or not cod_value or cod_value == "NA":
             ctx.user_data["create_parsed"] = d
@@ -502,26 +503,20 @@ async def do_create(update, ctx, text):
                 f"Please enter COD amount:")
             return
 
-        # Validate COD amount
         try:
             cod_amount = float(re.sub(r"[^\d.]", "", cod_value))
             if cod_amount <= 0:
                 ctx.user_data["create_parsed"] = d
                 ctx.user_data["state"] = "create_cod_missing"
-                await msg.edit_text(
-                    f"⚠️ Invalid COD amount: {cod_value}\n\n"
-                    f"Please enter valid COD amount:")
+                await msg.edit_text(f"⚠️ Invalid COD amount: {cod_value}\n\nPlease enter valid COD amount:")
                 return
             d["cod"] = str(int(cod_amount))
         except:
             ctx.user_data["create_parsed"] = d
             ctx.user_data["state"] = "create_cod_missing"
-            await msg.edit_text(
-                f"⚠️ Invalid COD amount: {cod_value}\n\n"
-                f"Please enter valid COD amount:")
+            await msg.edit_text(f"⚠️ Invalid COD amount: {cod_value}\n\nPlease enter valid COD amount:")
             return
 
-        # Duplicate check
         existing = find_by_phone(d.get("phone",""))
         if existing:
             ctx.user_data["create_parsed"] = d
@@ -560,16 +555,15 @@ async def do_create_shipment(update_or_q, ctx):
     ud = ctx.user_data
     d  = ud.get("create_parsed",{})
     creative = ud.get("create_creative","")
-    
+
     reply = getattr(update_or_q, 'message', None) or update_or_q.callback_query.message if hasattr(update_or_q, 'callback_query') else update_or_q.message
     msg   = await reply.reply_text("⏳ Creating on Shiprocket...")
-    
+
     try:
         products  = json.load(open(PRODUCTS_FILE)) if os.path.exists(PRODUCTS_FILE) else {}
         prod_name = d.get("product","Projector")
         prod      = products.get(prod_name, {"length":20,"breadth":15,"height":10,"weight":0.5})
-        
-        # Parse COD amount - no fallback to 2400
+
         try:
             cod_amount = float(re.sub(r"[^\d.]", "", d.get("cod", "0")))
             if cod_amount <= 0:
@@ -612,7 +606,7 @@ async def do_create_shipment(update_or_q, ctx):
             "length": float(prod["length"]), "breadth": float(prod["breadth"]),
             "height": float(prod["height"]), "weight": float(prod["weight"]),
         }
-        
+
         ensure_token()
         r = session.post(f"{SR_BASE}/orders/create/adhoc", json=payload, timeout=45)
         if r.status_code != 200:
@@ -626,7 +620,7 @@ async def do_create_shipment(update_or_q, ctx):
         resp        = r.json()
         shipment_id = resp.get("shipment_id")
         await msg.edit_text("⏳ Assigning courier...")
-        
+
         couriers = get_couriers(pickup_pin, delivery_pin, prod["weight"], True)
         if not couriers:
             await msg.edit_text(f"❌ No courier for {delivery_pin}")
@@ -637,7 +631,7 @@ async def do_create_shipment(update_or_q, ctx):
         awb = None
         chosen = None
         fallback = False
-        
+
         for c in sorted_c:
             cid = c.get("courier_company_id") or c.get("courier_id")
             if priority_rank(c.get("courier_name","")) == 999:
@@ -654,7 +648,7 @@ async def do_create_shipment(update_or_q, ctx):
 
         tracking  = f"https://shiprocket.co/tracking/{awb}"
         order_num = next_order_number()
-        
+
         order_record = {
             "order_id": order_id,
             "order_number": order_num,
@@ -685,10 +679,18 @@ async def do_create_shipment(update_or_q, ctx):
             "label_downloaded": False,
             "label_downloaded_date": "",
         }
-        
+
         save_order(order_record)
         courier_note = "⚠️ Fallback" if fallback else "✅ Priority"
-        
+
+        # ── Auto write to Events tab + upload to Meta Dataset ──
+        meta_status = "⚠️ Meta skipped"
+        try:
+            meta_status = process_new_order(order_record)
+            log.info(f"Meta result: {meta_status}")
+        except Exception as e:
+            log.error(f"Meta error: {e}")
+
         await msg.edit_text(
             f"✅ *Shipment Created!*\n"
             f"Order: #{order_num} | {d.get('name','')} | {d.get('phone','')}\n"
@@ -698,7 +700,9 @@ async def do_create_shipment(update_or_q, ctx):
             f"COD: ₹{int(cod_amount):,} | Courier: ₹{COURIER_CHARGES}\n"
             f"Vendor: {pickup_display} | {chosen.get('courier_name','')} {courier_note}\n"
             f"AWB: `{awb}`\n"
-            f"Tracking: {tracking}",
+            f"Tracking: {tracking}\n\n"
+            f"---\n"
+            f"{meta_status}",
             parse_mode="Markdown")
 
         label_url = generate_label(shipment_id)
@@ -720,7 +724,7 @@ async def do_create_shipment(update_or_q, ctx):
             InlineKeyboardButton("❌ Cancel", callback_data=f"action_cancel_{order_id}"),
         ]])
         await reply.reply_text("Shipment action:", reply_markup=kb)
-        
+
     except Exception as e:
         log.error(f"Create: {e}", exc_info=True)
         await msg.edit_text(f"❌ Error: {e}")
@@ -744,9 +748,7 @@ async def show_advance(q, ctx, phone):
     if not o:
         await q.message.reply_text("❌ Order not found", reply_markup=MAIN_KB)
         return
-    
     ctx.user_data.update({"adv_phone": phone, "adv_order": o, "state": "adv_picking"})
-    
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("₹400", callback_data="adv_400"),
          InlineKeyboardButton("₹500", callback_data="adv_500"),
@@ -755,7 +757,6 @@ async def show_advance(q, ctx, phone):
         [InlineKeyboardButton("Custom", callback_data="adv_custom"),
          InlineKeyboardButton("₹0 Full COD", callback_data="adv_0")],
     ])
-    
     await q.message.reply_text(
         f"📦 #{o.get('order_number')} — {o.get('customer_name','')}\n"
         f"Product: {o.get('product','')}\n"
@@ -768,37 +769,27 @@ async def do_save_advance(update_or_q, ctx, advance_amt):
     ud = ctx.user_data
     update_order(ud.get("adv_phone",""), advance_paid=advance_amt)
     ud["adv_advance"] = advance_amt
-    
     reply = getattr(update_or_q, 'message', None) or update_or_q
-    
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Save", callback_data="adv_save"),
         InlineKeyboardButton("🔄 Cancel + Rebook new COD", callback_data="adv_rebook"),
     ]])
-    
     await reply.reply_text(
-        f"Advance: ₹{advance_amt} saved.\n\n"
-        f"Need to change COD and rebook?",
+        f"Advance: ₹{advance_amt} saved.\n\nNeed to change COD and rebook?",
         reply_markup=kb)
 
 async def do_rebook_new_cod(update, ctx, new_cod):
     ud = ctx.user_data
     o = ud.get("adv_order")
     msg = await update.message.reply_text("⏳ Cancelling and rebooking...")
-    
     ok, awb_or_err, shipment_id = do_rebook_shipment(o, new_cod)
     if not ok:
         await msg.edit_text(f"❌ Failed: {awb_or_err}")
         ud.clear()
         return
-    
     await msg.edit_text(
-        f"✅ Rebooked!\n"
-        f"New AWB: {awb_or_err}\n"
-        f"New COD: ₹{new_cod:,}\n"
-        f"Advance: ₹{ud.get('adv_advance',0)} ✅",
+        f"✅ Rebooked!\nNew AWB: {awb_or_err}\nNew COD: ₹{new_cod:,}\nAdvance: ₹{ud.get('adv_advance',0)} ✅",
         reply_markup=MAIN_KB)
-    
     label_url = generate_label(shipment_id)
     if label_url:
         try:
@@ -819,13 +810,11 @@ async def show_label_menu(update, ctx):
     if not vendors:
         await update.message.reply_text("📥 No labels pending", reply_markup=MAIN_KB)
         return
-    
     kb_rows = []
     for v in vendors:
         products = get_products_for_vendor(v)
         total = sum(get_label_counts(v,p)[0] for p in products)
         kb_rows.append([InlineKeyboardButton(f"🏪 {v} ({total})", callback_data=f"lv1_{v}")])
-    
     await update.message.reply_text(
         "📥 *Download Labels*\nSelect vendor:",
         parse_mode="Markdown",
@@ -836,12 +825,10 @@ async def show_label_products(q, vendor):
     if not products:
         await q.message.reply_text("No labels for this vendor")
         return
-    
     kb_rows = []
     for p in products:
         total, adv = get_label_counts(vendor, p)
         kb_rows.append([InlineKeyboardButton(f"📦 {p} ({total})", callback_data=f"lv2_{vendor}|{p}")])
-    
     await q.message.reply_text(
         f"🏪 *{vendor}* — Select product:",
         parse_mode="Markdown",
@@ -859,16 +846,12 @@ async def do_download_labels(update, orders):
     if not orders:
         await update.callback_query.message.reply_text("No labels")
         return
-    
     await update.callback_query.message.reply_text(f"⏳ Generating {len(orders)} labels...")
     downloaded = 0
-    
     for o in orders:
         sr = o.get("shiprocket") or {}
         sid = sr.get("shipment_id")
-        if not sid:
-            continue
-        
+        if not sid: continue
         url = generate_label(sid)
         if url:
             try:
@@ -885,10 +868,8 @@ async def do_download_labels(update, orders):
                             downloaded += 1
             except Exception as e:
                 log.error(f"Label DL: {e}")
-    
     await update.callback_query.message.reply_text(
-        f"✅ {downloaded}/{len(orders)} downloaded. These will not appear again.",
-        reply_markup=MAIN_KB)
+        f"✅ {downloaded}/{len(orders)} downloaded.", reply_markup=MAIN_KB)
 
 # ─── PRODUCTS ─────────────────────────────
 async def show_products(update, ctx):
@@ -897,7 +878,6 @@ async def show_products(update, ctx):
         ctx.user_data["state"] = "prod_add"
         await update.message.reply_text("No products.\nSend: Name length breadth height weight")
         return
-    
     for name, p in products.items():
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("✏️ Edit", callback_data=f"prod_edit_{name}"),
@@ -905,9 +885,7 @@ async def show_products(update, ctx):
         ]])
         await update.message.reply_text(
             f"*{name}*\n{p['length']}×{p['breadth']}×{p['height']}cm | {p['weight']}kg",
-            parse_mode="Markdown",
-            reply_markup=kb)
-    
+            parse_mode="Markdown", reply_markup=kb)
     await update.message.reply_text(
         "Products ↑",
         reply_markup=InlineKeyboardMarkup([[
@@ -918,7 +896,6 @@ async def do_add_product(update, ctx, text):
     if len(parts) < 5:
         await update.message.reply_text("Format: Name length breadth height weight")
         return
-    
     try:
         l,b,h,w = float(parts[-4]),float(parts[-3]),float(parts[-2]),float(parts[-1])
         name = " ".join(parts[:-4])
@@ -934,35 +911,25 @@ async def do_add_product(update, ctx, text):
 async def do_reassign_courier(update, ctx, chosen_courier):
     ud = ctx.user_data
     o = ud.get("reassign_order")
-    sr = o.get("shiprocket") or {}
     await update.message.reply_text(f"⏳ Reassigning to {chosen_courier.get('courier_name','')}...")
-
     sr_order_id = get_real_sr_order_id(o)
     if not sr_order_id:
-        await update.message.reply_text("❌ No Shiprocket order ID — cancel manually", reply_markup=MAIN_KB)
-        ud.clear()
-        return
-
+        await update.message.reply_text("❌ No Shiprocket order ID", reply_markup=MAIN_KB)
+        ud.clear(); return
     ok, err = cancel_sr_order(sr_order_id)
     if not ok:
         await update.message.reply_text(f"❌ Cancel failed: {err}", reply_markup=MAIN_KB)
-        ud.clear()
-        return
-
+        ud.clear(); return
     products  = json.load(open(PRODUCTS_FILE)) if os.path.exists(PRODUCTS_FILE) else {}
     prod_name = o.get("product","Projector")
     prod      = products.get(prod_name, {"length":20,"breadth":15,"height":10,"weight":0.5})
     pickup_obj = resolve_pickup(o.get("pickup_location",""))
-    
     if not pickup_obj:
         await update.message.reply_text("❌ Pickup not found", reply_markup=MAIN_KB)
-        ud.clear()
-        return
-
+        ud.clear(); return
     delivery_pin = str(o.get("pincode","560001"))
     new_order_id = f"OBX{int(time.time())}_{uuid.uuid4().hex[:5]}"
     cod_amount   = o.get("cod_amount",0)
-
     payload = {
         "order_id": new_order_id,
         "order_date": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
@@ -980,50 +947,32 @@ async def do_reassign_courier(update, ctx, chosen_courier):
         "shipping_is_billing": True,
         "order_items": [{"name":prod_name,"sku":prod_name,"units":1,"selling_price":cod_amount,"discount":"0","tax":"0","hsn":""}],
         "payment_method": "COD",
-        "sub_total": cod_amount,
-        "cod_amount": cod_amount,
-        "length": float(prod["length"]),
-        "breadth": float(prod["breadth"]),
-        "height": float(prod["height"]),
-        "weight": float(prod["weight"]),
+        "sub_total": cod_amount, "cod_amount": cod_amount,
+        "length": float(prod["length"]), "breadth": float(prod["breadth"]),
+        "height": float(prod["height"]), "weight": float(prod["weight"]),
     }
-    
     ensure_token()
     r = session.post(f"{SR_BASE}/orders/create/adhoc", json=payload, timeout=45)
     if r.status_code != 200:
-        await update.message.reply_text(f"❌ Recreate failed", reply_markup=MAIN_KB)
-        ud.clear()
-        return
-
+        await update.message.reply_text("❌ Recreate failed", reply_markup=MAIN_KB)
+        ud.clear(); return
     resp = r.json()
     shipment_id = resp.get("shipment_id")
     cid = chosen_courier.get("courier_company_id") or chosen_courier.get("courier_id")
     awb = assign_awb(shipment_id, cid)
-    
     if not awb:
         await update.message.reply_text("❌ AWB failed", reply_markup=MAIN_KB)
-        ud.clear()
-        return
-
+        ud.clear(); return
     tracking = f"https://shiprocket.co/tracking/{awb}"
     update_order_by_id(
         ud.get("reassign_order_id"),
-        order_id=new_order_id,
-        status="active",
-        shiprocket={
-            "order_id": resp.get("order_id",""),
-            "shipment_id": shipment_id,
-            "awb": awb,
-            "courier": chosen_courier.get("courier_name",""),
-            "rate": chosen_courier.get("rate",0),
-            "tracking": tracking
-        })
-
+        order_id=new_order_id, status="active",
+        shiprocket={"order_id": resp.get("order_id",""), "shipment_id": shipment_id,
+                    "awb": awb, "courier": chosen_courier.get("courier_name",""),
+                    "rate": chosen_courier.get("rate",0), "tracking": tracking})
     await update.message.reply_text(
-        f"✅ Reassigned!\n"
-        f"New: {chosen_courier.get('courier_name','')} | AWB: {awb}",
+        f"✅ Reassigned!\nNew: {chosen_courier.get('courier_name','')} | AWB: {awb}",
         reply_markup=MAIN_KB)
-
     label_url = generate_label(shipment_id)
     if label_url:
         try:
@@ -1045,56 +994,44 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     data = q.data or ""
     ud = ctx.user_data
 
-    # Duplicate check — proceed or cancel
     if data == "dup_yes":
         ud["state"] = "create_creative"
         d = ud.get("create_parsed",{})
         await q.message.reply_text(
-            f"✅ Parsed:\n"
-            f"Name: {d.get('name','')}\n"
-            f"Phone: {d.get('phone','')}\n"
-            f"City: {d.get('city','')}, {d.get('pincode','')}\n"
-            f"State: {d.get('state','')}\n"
-            f"Product: {d.get('product','')}\n"
-            f"COD: ₹{int(float(d.get('cod',0))):,}\n\n"
+            f"✅ Parsed:\nName: {d.get('name','')}\nPhone: {d.get('phone','')}\n"
+            f"City: {d.get('city','')}, {d.get('pincode','')}\nState: {d.get('state','')}\n"
+            f"Product: {d.get('product','')}\nCOD: ₹{int(float(d.get('cod',0))):,}\n\n"
             f"Enter creative code (or type 'skip'):")
         return
 
     if data == "dup_no":
         await q.message.reply_text("Cancelled", reply_markup=MAIN_KB)
-        ud.clear()
-        return
+        ud.clear(); return
 
     if data.startswith("adv_start_"):
-        await show_advance(q, ctx, data.replace("adv_start_",""))
-        return
+        await show_advance(q, ctx, data.replace("adv_start_","")); return
 
     if data.startswith("adv_") and data not in ("adv_save","adv_rebook","adv_custom"):
-        await do_save_advance(q, ctx, int(data.replace("adv","")))
-        return
+        await do_save_advance(q, ctx, int(data.replace("adv",""))); return
 
     if data == "adv_custom":
         ud["state"] = "adv_custom"
-        await q.message.reply_text("Enter advance amount:")
-        return
+        await q.message.reply_text("Enter advance amount:"); return
 
     if data == "adv_save":
         await q.message.reply_text("✅ Done!", reply_markup=MAIN_KB)
-        ud.clear()
-        return
+        ud.clear(); return
 
     if data == "adv_rebook":
         ud["state"] = "adv_new_cod"
-        await q.message.reply_text("Enter new COD amount:")
-        return
+        await q.message.reply_text("Enter new COD amount:"); return
 
     if data.startswith("pickup_yes_"):
         parts = data.replace("pickup_yes_","").split("_",1)
         ok, msg = schedule_pickup([parts[0]])
         if ok and len(parts)>1:
             update_order_by_id(parts[1], pickup_scheduled=True)
-        await q.edit_message_text(msg)
-        return
+        await q.edit_message_text(msg); return
 
     if data.startswith("action_cancel_"):
         order_id = data.replace("action_cancel_","")
@@ -1104,8 +1041,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             sr_order_id = get_real_sr_order_id(o)
             if sr_order_id:
                 ok, msg = cancel_sr_order(sr_order_id)
-                if ok:
-                    update_order_by_id(order_id, status="cancelled")
+                if ok: update_order_by_id(order_id, status="cancelled")
                 await q.message.reply_text(
                     f"{'✅ Cancelled' if ok else '❌ '+msg} #{o.get('order_number')}",
                     reply_markup=MAIN_KB)
@@ -1118,28 +1054,18 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         orders = load_orders()
         o = next((x for x in orders if x.get("order_id")==order_id), None)
         if not o:
-            await q.message.reply_text("❌ Order not found")
-            return
-        
+            await q.message.reply_text("❌ Order not found"); return
         await q.message.reply_text("⏳ Fetching couriers...")
         couriers = get_available_couriers_for_order(o)
         if not couriers:
-            await q.message.reply_text("❌ No couriers available")
-            return
-        
+            await q.message.reply_text("❌ No couriers available"); return
         sorted_c = sorted(couriers, key=lambda c: priority_rank(c.get("courier_name","")))[:10]
-        ud.update({
-            "reassign_order_id": order_id,
-            "reassign_order": o,
-            "reassign_couriers": sorted_c,
-            "state": "reassign_select"
-        })
-        
+        ud.update({"reassign_order_id": order_id, "reassign_order": o,
+                    "reassign_couriers": sorted_c, "state": "reassign_select"})
         lines = ["🔄 *Available Couriers:*\n"]
         for i,c in enumerate(sorted_c,1):
             rank = "Priority" if priority_rank(c.get("courier_name","")) < 999 else "Standard"
             lines.append(f"{i}. {c.get('courier_name','')} — ₹{c.get('rate',0)} ({rank})")
-        
         await q.message.reply_text("\n".join(lines), parse_mode="Markdown")
         return
 
@@ -1154,9 +1080,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("✅ Yes cancel + manual", callback_data="manual_cancel_yes"),
                     InlineKeyboardButton("❌ No", callback_data="manual_cancel_no"),
                 ]])
-                await q.message.reply_text(
-                    f"AWB: {sr.get('awb')} — cancel + add manual?",
-                    reply_markup=kb)
+                await q.message.reply_text(f"AWB: {sr.get('awb')} — cancel + add manual?", reply_markup=kb)
             else:
                 ud["state"] = "manual_vendor"
                 await q.message.reply_text("Enter vendor name:")
@@ -1165,30 +1089,22 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "manual_cancel_yes":
         o = ud.get("manual_order",{})
         sr_order_id = get_real_sr_order_id(o)
-        if sr_order_id:
-            cancel_sr_order(sr_order_id)
+        if sr_order_id: cancel_sr_order(sr_order_id)
         ud["state"] = "manual_vendor"
-        await q.message.reply_text("✅ Cancelled\n\nEnter vendor name:")
-        return
+        await q.message.reply_text("✅ Cancelled\n\nEnter vendor name:"); return
 
     if data == "manual_cancel_no":
         await q.message.reply_text("Cancelled", reply_markup=MAIN_KB)
-        ud.clear()
-        return
+        ud.clear(); return
 
     if data.startswith("lv1_"):
-        await show_label_products(q, data.replace("lv1_",""))
-        return
-    
+        await show_label_products(q, data.replace("lv1_","")); return
     if data.startswith("lv2_"):
         parts = data.replace("lv2_","").split("|",1)
-        await show_label_filter(q, parts[0], parts[1] if len(parts)>1 else "")
-        return
-    
+        await show_label_filter(q, parts[0], parts[1] if len(parts)>1 else ""); return
     if data.startswith("lv3_"):
         parts = data.replace("lv3_","").split("|")
-        vendor = parts[0]
-        product = parts[1] if len(parts)>1 else ""
+        vendor = parts[0]; product = parts[1] if len(parts)>1 else ""
         mode = parts[2] if len(parts)>2 else "all"
         await do_download_labels(
             update,
@@ -1197,21 +1113,16 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if data == "prod_add":
         ud["state"] = "prod_add"
-        await q.message.reply_text("Send: Name length breadth height weight")
-        return
-    
+        await q.message.reply_text("Send: Name length breadth height weight"); return
     if data.startswith("prod_del_"):
         name = data.replace("prod_del_","")
         products = json.load(open(PRODUCTS_FILE)) if os.path.exists(PRODUCTS_FILE) else {}
         products.pop(name,None)
         json.dump(products, open(PRODUCTS_FILE,"w"), indent=2)
-        await q.edit_message_text(f"🗑 Deleted: {name}")
-        return
-    
+        await q.edit_message_text(f"🗑 Deleted: {name}"); return
     if data.startswith("prod_edit_"):
         ud["state"] = "prod_add"
-        await q.message.reply_text("New details:\nName l b h w")
-        return
+        await q.message.reply_text("New details:\nName l b h w"); return
 
 # ─── MAIN ─────────────────────────────────
 async def main():
@@ -1222,16 +1133,30 @@ async def main():
     log.info("Syncing from sheets...")
     sync_from_sheets()
     log.info("Sync done")
-    
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("adsspend", cmd_adsspend))
-    app.add_handler(CommandHandler("orders", cmd_orders))
-    app.add_handler(CommandHandler("report", cmd_report))
+
+    app.add_handler(CommandHandler("start",       cmd_start))
+    app.add_handler(CommandHandler("adsspend",    cmd_adsspend))
+    app.add_handler(CommandHandler("orders",      cmd_orders))
+    app.add_handler(CommandHandler("report",      cmd_report))
     app.add_handler(CommandHandler("setcreative", cmd_setcreative))
+    app.add_handler(CommandHandler("uploadfb",    cmd_uploadfb))
+
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
+
+    # ── Daily scheduler at 11:00 PM IST ──
+    async def scheduled_upload():
+        log.info("Scheduled Meta upload starting...")
+        result = run_upload()
+        log.info(f"Scheduled upload done: {result[:200]}")
+
+    scheduler = AsyncIOScheduler(timezone=pytz.timezone("Asia/Kolkata"))
+    scheduler.add_job(scheduled_upload, "cron", hour=23, minute=0)
+    scheduler.start()
+    log.info("Scheduler started — Meta upload daily at 11:00 PM IST")
+
     log.info("Bot running...")
     await app.run_polling()
 
