@@ -189,6 +189,7 @@ def do_rebook_shipment(o, new_cod):
         "billing_customer_name": o.get("customer_name",""),
         "billing_last_name": ".",
         "billing_address": o.get("address",""),
+        "billing_address_2": d.get("address2",""),
         "billing_city": o.get("city",""),
         "billing_state": o.get("state","Karnataka"),
         "billing_country": "India",
