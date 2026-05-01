@@ -237,24 +237,26 @@ def ai_parse(text):
 Pickup: <pickup_location>
 Product: <product_name>
 Name: <full_name>
-Address: <street>
-Landmark: <landmark_or_NA>
-City: <city>
-State: <state — if not mentioned derive from pincode>
+Address: <house_no + village/area/locality — preserve exact local identifiers>
+Address2: <landmark phrase e.g. near bus stop / opposite school / NA>
+City: <district or city name only>
+State: <state — derive from pincode if not mentioned>
 Pincode: <6digit>
 Phone: <10digit>
 Alt_Phone: <10digit_or_NA>
 Payment_Mode: <COD_or_PREPAID>
-Amount: <amount_number_only_or_MISSING>
+Amount: <number_only_or_MISSING>
 
 Rules:
-- If State is not mentioned, derive it from the Pincode automatically.
-- Phone must be exactly 10 digits (remove +91 or 91 prefix if present).
-- Do NOT repeat pincode/city/state inside Address.
-- Alt_Phone = alternative/secondary number or NA.
-- Payment_Mode = COD or PREPAID.
-- Amount must be number only, no ₹ symbol. If no amount mentioned, write MISSING.
-- Landmark = nearby/near/behind/etc or NA.
+- Address = house/door number + street/village/locality (e.g. "a/p Nipanal" or "124/3 Kembathahalli Road Gottigere"). Keep all local identifiers exactly as written.
+- Address2 = landmark clue only (near/opposite/behind phrases). NA if none.
+- City = district or city name ONLY (e.g. "Belagavi", "Bangalore"). Never put village or locality in City.
+- Never put City name inside Address field — they are separate.
+- State: derive from Pincode if not mentioned (591222 = Karnataka, 560xxx = Karnataka, etc).
+- Phone: exactly 10 digits, strip +91 or 91 prefix. If two numbers given, use the first/primary one.
+- Alt_Phone: second number if present, else NA.
+- Payment_Mode: COD or PREPAID only.
+- Amount: digits only, no ₹ or commas. MISSING if not found.
 
 Text:
 {text}"""
