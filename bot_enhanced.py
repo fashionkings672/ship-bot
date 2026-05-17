@@ -131,6 +131,9 @@ def get_couriers(pp, dp, weight, cod):
 def is_surface(c):
     mode = str(c.get("mode", "")).lower()
     name = str(c.get("courier_name", "")).lower()
+    # Bluedart is mislabelled as Air in Shiprocket API — force treat as surface
+    if "bluedart" in name or "blue dart" in name:
+        return True
     return "surface" in mode or "surface" in name
 
 def courier_auto_rank(c):
@@ -153,9 +156,7 @@ def courier_auto_rank(c):
     return 99
 
 def select_courier(couriers, shipment_id):
-    surface = [c for c in couriers if is_surface(c)]
-    if not surface:
-        surface = couriers
+    surface = [c for c in couriers if is_surface(c)] or couriers
 
     auto = [c for c in surface if courier_auto_rank(c) < 99]
     auto_sorted = sorted(auto, key=courier_auto_rank)
@@ -173,6 +174,7 @@ def select_courier(couriers, shipment_id):
         return awb, chosen, False, surface
     else:
         return None, None, True, surface
+
 
 # ─── END COURIER HELPERS ──────────────────────────────────────────────────────
 
