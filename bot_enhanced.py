@@ -5,6 +5,9 @@ Features:
 - Auto upload to Meta Offline Events Dataset
 - Daily 11 PM IST backup upload
 - /uploadfb manual upload command
+
+FIX: sr_payment NameError — variable now passed through _finish_shipment_after_awb
+     and derived from d when restoring pending context.
 """
 import os, re, json, uuid, time, logging, asyncio, aiohttp, io
 import requests
@@ -113,7 +116,6 @@ def get_couriers(pp, dp, weight, cod):
             "weight": weight
         })
         all_c = r.get("data",{}).get("available_courier_companies",[]) or []
-        # Filter: reject couriers whose charged slab exceeds our product weight
         filtered = []
         for c in all_c:
             charge_w = float(c.get("charge_weight") or c.get("min_weight") or weight)
@@ -127,10 +129,8 @@ def get_couriers(pp, dp, weight, cod):
 
 # ─── COURIER SELECTION HELPERS ────────────────────────────────────────────────
 def is_surface(c):
-    """Return True if courier is surface mode."""
     mode = str(c.get("mode", "")).lower()
     name = str(c.get("courier_name", "")).lower()
-    # Shiprocket returns mode as 'Surface' or 'Air'
     return "surface" in mode or "surface" in name
 
 def courier_auto_rank(c):
@@ -153,14 +153,8 @@ def courier_auto_rank(c):
     return 99
 
 def select_courier(couriers, shipment_id):
-    """
-    Filter to surface-only, then try Bluedart → Delhivery.
-    Returns (awb, chosen_courier, need_manual, surface_couriers).
-    need_manual=True means neither auto courier got AWB — caller must ask user.
-    """
     surface = [c for c in couriers if is_surface(c)]
     if not surface:
-        # No surface couriers at all — fallback to all and flag
         surface = couriers
 
     auto = [c for c in surface if courier_auto_rank(c) < 99]
@@ -241,7 +235,7 @@ def get_available_couriers_for_order(order):
     delivery_pin = str(order.get("pincode","560001"))
     products = json.load(open(PRODUCTS_FILE)) if os.path.exists(PRODUCTS_FILE) else {}
     prod = products.get(order.get("product","Projector"), {"weight":0.5})
-    weight = float(prod["weight"])  # from products.json
+    weight = float(prod["weight"])
     return get_couriers(pickup_pin, delivery_pin, weight, True)
 
 def do_rebook_shipment(o, new_cod):
@@ -260,7 +254,7 @@ def do_rebook_shipment(o, new_cod):
     delivery_pin = str(o.get("pincode","560001"))
     pickup_pin   = str(pickup_obj.get("pin_code","560001"))
     new_order_id = f"OBX{int(time.time())}_{uuid.uuid4().hex[:5]}"
-    weight = float(prod["weight"])  # from products.json
+    weight = float(prod["weight"])
 
     payload = {
         "order_id": new_order_id,
@@ -269,7 +263,7 @@ def do_rebook_shipment(o, new_cod):
         "billing_customer_name": o.get("customer_name",""),
         "billing_last_name": ".",
         "billing_address": o.get("address",""),
-        "billing_address_2": o.get("address2",""),         # ← LANDMARK FIX (was `d` — crash bug fixed)
+        "billing_address_2": o.get("address2",""),
         "billing_city": o.get("city",""),
         "billing_state": o.get("state","Karnataka"),
         "billing_country": "India",
@@ -684,13 +678,14 @@ async def do_create_shipment(update_or_q, ctx):
         delivery_pin   = str(d.get("pincode","560001"))
         order_id       = f"OBX{int(time.time())}_{uuid.uuid4().hex[:5]}"
 
-        # Weight from products.json — no hardcode
         weight = float(prod["weight"])
         log.info(f"Booking weight: {weight}kg for {prod_name}")
 
-        # BUG2 FIX: Payment mode — PREPAID or COD from parsed order
+        # ── PAYMENT MODE ──────────────────────────────────────────────────────
+        # FIX: derive sr_payment here so it's always defined before use below
         is_prepaid = d.get("payment_mode","").strip().upper() == "PREPAID"
         sr_payment  = "Prepaid" if is_prepaid else "COD"
+        # ─────────────────────────────────────────────────────────────────────
 
         payload = {
             "order_id": order_id,
@@ -699,7 +694,7 @@ async def do_create_shipment(update_or_q, ctx):
             "billing_customer_name": d.get("name","Customer"),
             "billing_last_name": ".",
             "billing_address": d.get("address",""),
-            "billing_address_2": d.get("address2",""),     # BUG1 FIX: landmark
+            "billing_address_2": d.get("address2",""),
             "billing_city": d.get("city",""),
             "billing_state": d.get("state","Karnataka"),
             "billing_country": "India",
@@ -750,6 +745,7 @@ async def do_create_shipment(update_or_q, ctx):
                 "pending_pickup_display": pickup_display,
                 "pending_creative": creative,
                 "pending_surface_couriers": surface_couriers,
+                "pending_sr_payment": sr_payment,   # ← FIX: store so finalize can use it
             })
             lines = ["⚠️ *Bluedart & Delhivery unavailable.*\nPick a courier:\n"]
             for i, c in enumerate(surface_couriers[:10], 1):
@@ -757,11 +753,13 @@ async def do_create_shipment(update_or_q, ctx):
             await reply.reply_text("\n".join(lines), parse_mode="Markdown")
             return
 
+        # ── Normal path: pass sr_payment explicitly ───────────────────────────
         await _finish_shipment_after_awb(reply, ctx, awb, chosen,
             order_id=order_id, resp=resp, d=d,
             prod_name=prod_name, cod_amount=cod_amount,
             pickup_display=pickup_display, delivery_pin=delivery_pin,
-            weight=weight, shipment_id=shipment_id, creative=creative)
+            weight=weight, shipment_id=shipment_id, creative=creative,
+            sr_payment=sr_payment)   # ← FIX: pass sr_payment
 
     except Exception as e:
         log.error(f"Create: {e}", exc_info=True)
@@ -769,11 +767,14 @@ async def do_create_shipment(update_or_q, ctx):
     finally:
         ctx.user_data.clear()
 
+# ─── FINISH SHIPMENT (shared finalization) ────────────────────────────────────
+# FIX: added sr_payment param; derived from d when restoring pending context
 async def _finish_shipment_after_awb(reply, ctx, awb, chosen,
     order_id=None, resp=None, d=None,
     prod_name=None, cod_amount=None,
     pickup_display=None, delivery_pin=None,
-    weight=None, shipment_id=None, creative=None):
+    weight=None, shipment_id=None, creative=None,
+    sr_payment=None):                               # ← FIX: new param
     """Shared finalization: save order, send confirmation, generate label."""
 
     ud = ctx.user_data
@@ -788,6 +789,13 @@ async def _finish_shipment_after_awb(reply, ctx, awb, chosen,
         creative       = ud.get("pending_creative","")
         shipment_id    = ud.get("pending_shipment_id")
         delivery_pin   = str(d.get("pincode","560001")) if d else "560001"
+        sr_payment     = ud.get("pending_sr_payment", "COD")   # ← FIX: restore from ud
+
+    # ── FIX: derive sr_payment from d if still None (safety fallback) ─────────
+    if sr_payment is None:
+        is_prepaid = (d or {}).get("payment_mode","").strip().upper() == "PREPAID"
+        sr_payment = "Prepaid" if is_prepaid else "COD"
+    # ─────────────────────────────────────────────────────────────────────────
 
     tracking  = f"https://shiprocket.co/tracking/{awb}"
     order_num = next_order_number()
@@ -799,7 +807,7 @@ async def _finish_shipment_after_awb(reply, ctx, awb, chosen,
         "phone": d.get("phone",""),
         "customer_name": d.get("name",""),
         "address": d.get("address",""),
-        "address2": d.get("address2",""),              # ← SAVED in record
+        "address2": d.get("address2",""),
         "city": d.get("city",""),
         "state": d.get("state","Karnataka"),
         "pincode": delivery_pin,
@@ -807,7 +815,7 @@ async def _finish_shipment_after_awb(reply, ctx, awb, chosen,
         "creative": creative,
         "total": cod_amount,
         "cod_amount": cod_amount,
-        "payment_method": sr_payment,
+        "payment_method": sr_payment,              # ← now always defined
         "courier_paid": COURIER_CHARGES,
         "advance_paid": None,
         "status": "active",
@@ -843,6 +851,7 @@ async def _finish_shipment_after_awb(reply, ctx, awb, chosen,
         f"State: {d.get('state','Karnataka')}\n"
         f"Product: {prod_name} | Creative: {creative or '—'}\n"
         f"COD: ₹{int(cod_amount):,} | Courier: ₹{COURIER_CHARGES}\n"
+        f"Payment: {sr_payment}\n"
         f"Vendor: {pickup_display} | {courier_label}\n"
         f"AWB: `{awb}`\n"
         f"Tracking: {tracking}\n\n"
@@ -1015,13 +1024,12 @@ async def show_products(update, ctx):
         await update.message.reply_text("No products.\nSend: Name length breadth height weight"); return
     for name, p in products.items():
         w = float(p['weight'])
-        weight_warn = ""
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("✏️ Edit", callback_data=f"prod_edit_{name}"),
             InlineKeyboardButton("🗑 Delete", callback_data=f"prod_del_{name}"),
         ]])
         await update.message.reply_text(
-            f"*{name}*\n{p['length']}×{p['breadth']}×{p['height']}cm | {w}kg{weight_warn}",
+            f"*{name}*\n{p['length']}×{p['breadth']}×{p['height']}cm | {w}kg",
             parse_mode="Markdown", reply_markup=kb)
     await update.message.reply_text(
         "Products ↑",
@@ -1038,8 +1046,7 @@ async def do_add_product(update, ctx, text):
         products = json.load(open(PRODUCTS_FILE)) if os.path.exists(PRODUCTS_FILE) else {}
         products[name] = {"length":l,"breadth":b,"height":h,"weight":w}
         json.dump(products, open(PRODUCTS_FILE,"w"), indent=2)
-        warn = ""
-        await update.message.reply_text(f"✅ Saved: {name}{warn}", reply_markup=MAIN_KB)
+        await update.message.reply_text(f"✅ Saved: {name}", reply_markup=MAIN_KB)
     except:
         await update.message.reply_text("Invalid. Format: Name l b h w", reply_markup=MAIN_KB)
     ctx.user_data.clear()
@@ -1067,7 +1074,7 @@ async def do_reassign_courier(update, ctx, chosen_courier):
     delivery_pin = str(o.get("pincode","560001"))
     new_order_id = f"OBX{int(time.time())}_{uuid.uuid4().hex[:5]}"
     cod_amount   = o.get("cod_amount",0)
-    weight = float(prod["weight"])  # from products.json
+    weight = float(prod["weight"])
     payload = {
         "order_id": new_order_id,
         "order_date": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
@@ -1075,7 +1082,7 @@ async def do_reassign_courier(update, ctx, chosen_courier):
         "billing_customer_name": o.get("customer_name",""),
         "billing_last_name": ".",
         "billing_address": o.get("address",""),
-        "billing_address_2": o.get("address2",""),             # ← LANDMARK
+        "billing_address_2": o.get("address2",""),
         "billing_city": o.get("city",""),
         "billing_state": o.get("state","Karnataka"),
         "billing_country": "India",
