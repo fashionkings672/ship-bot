@@ -43,7 +43,8 @@ openai.api_key = OPENAI_API_KEY
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("bot")
 
-COURIER_CHARGES = 300
+COURIER_CHARGES  = 300
+# Weight comes from products.json — no hardcode
 
 # ─── SHIPROCKET ───────────────────────────
 SR_BASE    = "https://apiv2.shiprocket.in/v1/external"
@@ -99,10 +100,87 @@ def sr_get(ep, params=None):
     return r.json() if r.content else {}
 
 def get_couriers(pp, dp, weight, cod):
+    """
+    Fetch couriers for given weight.
+    Filters out any courier whose charge_weight/slab > product weight
+    so we never accidentally book a 5KG slot for a 2KG item.
+    """
     try:
-        r = sr_get("/courier/serviceability/", {"pickup_postcode":pp,"delivery_postcode":dp,"cod":int(bool(cod)),"weight":weight})
-        return r.get("data",{}).get("available_courier_companies",[]) or []
-    except: return []
+        r = sr_get("/courier/serviceability/", {
+            "pickup_postcode": pp,
+            "delivery_postcode": dp,
+            "cod": int(bool(cod)),
+            "weight": weight
+        })
+        all_c = r.get("data",{}).get("available_courier_companies",[]) or []
+        # Filter: reject couriers whose charged slab exceeds our product weight
+        filtered = []
+        for c in all_c:
+            charge_w = float(c.get("charge_weight") or c.get("min_weight") or weight)
+            if charge_w <= weight:
+                filtered.append(c)
+            else:
+                log.info(f"Skipped {c.get('courier_name','')} — slab {charge_w}kg > {weight}kg")
+        return filtered
+    except:
+        return []
+
+# ─── COURIER SELECTION HELPERS ────────────────────────────────────────────────
+def is_surface(c):
+    """Return True if courier is surface mode."""
+    mode = str(c.get("mode", "")).lower()
+    name = str(c.get("courier_name", "")).lower()
+    # Shiprocket returns mode as 'Surface' or 'Air'
+    return "surface" in mode or "surface" in name
+
+def courier_auto_rank(c):
+    """
+    0 = Bluedart   (1st choice)
+    1 = Delhivery  (2nd)
+    2 = Ekart      (3rd)
+    3 = DTDC       (4th)
+    99 = everything else → ask user
+    """
+    name = str(c.get("courier_name", "")).lower()
+    if "bluedart" in name or "blue dart" in name:
+        return 0
+    if "delhivery" in name:
+        return 1
+    if "ekart" in name or "e-kart" in name:
+        return 2
+    if "dtdc" in name:
+        return 3
+    return 99
+
+def select_courier(couriers, shipment_id):
+    """
+    Filter to surface-only, then try Bluedart → Delhivery.
+    Returns (awb, chosen_courier, need_manual, surface_couriers).
+    need_manual=True means neither auto courier got AWB — caller must ask user.
+    """
+    surface = [c for c in couriers if is_surface(c)]
+    if not surface:
+        # No surface couriers at all — fallback to all and flag
+        surface = couriers
+
+    auto = [c for c in surface if courier_auto_rank(c) < 99]
+    auto_sorted = sorted(auto, key=courier_auto_rank)
+
+    awb = None
+    chosen = None
+    for c in auto_sorted:
+        cid = c.get("courier_company_id") or c.get("courier_id")
+        awb = assign_awb(shipment_id, cid)
+        if awb:
+            chosen = c
+            break
+
+    if awb:
+        return awb, chosen, False, surface
+    else:
+        return None, None, True, surface
+
+# ─── END COURIER HELPERS ──────────────────────────────────────────────────────
 
 def priority_rank(name):
     if not os.path.exists(COURIER_PRIORITY_FILE): return 999
@@ -163,7 +241,8 @@ def get_available_couriers_for_order(order):
     delivery_pin = str(order.get("pincode","560001"))
     products = json.load(open(PRODUCTS_FILE)) if os.path.exists(PRODUCTS_FILE) else {}
     prod = products.get(order.get("product","Projector"), {"weight":0.5})
-    return get_couriers(pickup_pin, delivery_pin, prod["weight"], True)
+    weight = float(prod["weight"])  # from products.json
+    return get_couriers(pickup_pin, delivery_pin, weight, True)
 
 def do_rebook_shipment(o, new_cod):
     sr_order_id = get_real_sr_order_id(o)
@@ -181,6 +260,7 @@ def do_rebook_shipment(o, new_cod):
     delivery_pin = str(o.get("pincode","560001"))
     pickup_pin   = str(pickup_obj.get("pin_code","560001"))
     new_order_id = f"OBX{int(time.time())}_{uuid.uuid4().hex[:5]}"
+    weight = float(prod["weight"])  # from products.json
 
     payload = {
         "order_id": new_order_id,
@@ -189,7 +269,7 @@ def do_rebook_shipment(o, new_cod):
         "billing_customer_name": o.get("customer_name",""),
         "billing_last_name": ".",
         "billing_address": o.get("address",""),
-        "billing_address_2": d.get("address2",""),
+        "billing_address_2": o.get("address2",""),         # ← LANDMARK FIX (was `d` — crash bug fixed)
         "billing_city": o.get("city",""),
         "billing_state": o.get("state","Karnataka"),
         "billing_country": "India",
@@ -202,7 +282,7 @@ def do_rebook_shipment(o, new_cod):
         "payment_method": "COD",
         "sub_total": new_cod, "cod_amount": new_cod,
         "length": float(prod["length"]), "breadth": float(prod["breadth"]),
-        "height": float(prod["height"]), "weight": float(prod["weight"]),
+        "height": float(prod["height"]), "weight": weight,
     }
 
     ensure_token()
@@ -211,15 +291,10 @@ def do_rebook_shipment(o, new_cod):
 
     resp        = r.json()
     shipment_id = resp.get("shipment_id")
-    couriers    = get_couriers(pickup_pin, delivery_pin, prod["weight"], True)
-    sorted_c    = sorted(couriers, key=lambda c: priority_rank(c.get("courier_name","")))
-    awb = None; chosen = None
-    for c in sorted_c:
-        cid = c.get("courier_company_id") or c.get("courier_id")
-        awb = assign_awb(shipment_id, cid)
-        if awb: chosen = c; break
+    couriers    = get_couriers(pickup_pin, delivery_pin, weight, True)
+    awb, chosen, need_manual, _ = select_courier(couriers, shipment_id)
 
-    if not awb: return False, "AWB failed", None
+    if not awb: return False, "AWB failed — no surface courier assigned", None
 
     tracking = f"https://shiprocket.co/tracking/{awb}"
     update_order(o.get("phone",""),
@@ -250,7 +325,7 @@ Amount: <number_only_or_MISSING>
 
 Rules:
 - Address = house/door number + street/village/locality (e.g. "a/p Nipanal" or "124/3 Kembathahalli Road Gottigere"). Keep all local identifiers exactly as written.
-- Address2 = landmark clue only (near/opposite/behind phrases). NA if none.
+- Address2 = landmark clue only (near/opposite/behind phrases, area names like "Vidya Nagar"). NA if none. NEVER leave this blank if customer mentioned a landmark.
 - City = district or city name ONLY (e.g. "Belagavi", "Bangalore"). Never put village or locality in City.
 - Never put City name inside Address field — they are separate.
 - State: derive from Pincode if not mentioned (591222 = Karnataka, 560xxx = Karnataka, etc).
@@ -381,7 +456,6 @@ async def cmd_setcreative(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Usage: /setcreative <phone> <code>")
 
-# ── /uploadfb command ──
 async def cmd_uploadfb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Running Meta upload...")
     try:
@@ -419,15 +493,15 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             cod_amount = float(re.sub(r"[^\d.]", "", text))
             if cod_amount <= 0:
-                await update.message.reply_text("❌ COD amount must be greater than 0. Please enter again:")
+                await update.message.reply_text("❌ COD must be > 0. Enter again:")
                 return
         except:
-            await update.message.reply_text("❌ Invalid amount. Enter number only (e.g. 2400):")
+            await update.message.reply_text("❌ Invalid. Number only (e.g. 2400):")
             return
         ud["create_parsed"]["cod"] = str(int(cod_amount))
         ud["state"] = "create_creative"
         await update.message.reply_text(
-            f"✅ COD amount: ₹{int(cod_amount):,}\n\nEnter creative code (or type 'skip'):")
+            f"✅ COD: ₹{int(cod_amount):,}\n\nEnter creative code (or type 'skip'):")
         return
 
     if state == "create_creative":
@@ -477,6 +551,27 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except: await update.message.reply_text("Enter the number only (e.g. 1)")
         return
 
+    # ─── state: waiting for manual courier pick when auto-assign failed ───────
+    if state == "manual_courier_pick":
+        try:
+            idx = int(text.strip()) - 1
+            surface = ud.get("pending_surface_couriers", [])
+            if 0 <= idx < len(surface):
+                chosen = surface[idx]
+                shipment_id = ud.get("pending_shipment_id")
+                cid = chosen.get("courier_company_id") or chosen.get("courier_id")
+                awb = assign_awb(shipment_id, cid)
+                if awb:
+                    await _finish_shipment_after_awb(update, ctx, awb, chosen)
+                else:
+                    await update.message.reply_text(
+                        f"❌ AWB failed for {chosen.get('courier_name','')}. Try another number:")
+            else:
+                await update.message.reply_text("Invalid number. Try again:")
+        except:
+            await update.message.reply_text("Enter the number only (e.g. 1)")
+        return
+
     await update.message.reply_text("Use the buttons ⬇️", reply_markup=MAIN_KB)
 
 # ─── CREATE SHIPMENT ──────────────────────
@@ -499,11 +594,12 @@ async def do_create(update, ctx, text):
                 f"✅ Parsed:\n"
                 f"Name: {d.get('name','')}\n"
                 f"Phone: {d.get('phone','')}\n"
+                f"Address: {d.get('address','')}\n"
+                f"Landmark: {d.get('address2','NA')}\n"
                 f"City: {d.get('city','')}, {d.get('pincode','')}\n"
                 f"State: {d.get('state','')}\n"
                 f"Product: {d.get('product','')}\n\n"
-                f"⚠️ COD amount is missing!\n"
-                f"Please enter COD amount:")
+                f"⚠️ COD missing — enter amount:")
             return
 
         try:
@@ -511,13 +607,13 @@ async def do_create(update, ctx, text):
             if cod_amount <= 0:
                 ctx.user_data["create_parsed"] = d
                 ctx.user_data["state"] = "create_cod_missing"
-                await msg.edit_text(f"⚠️ Invalid COD amount: {cod_value}\n\nPlease enter valid COD amount:")
+                await msg.edit_text(f"⚠️ Invalid COD: {cod_value}\n\nEnter valid amount:")
                 return
             d["cod"] = str(int(cod_amount))
         except:
             ctx.user_data["create_parsed"] = d
             ctx.user_data["state"] = "create_cod_missing"
-            await msg.edit_text(f"⚠️ Invalid COD amount: {cod_value}\n\nPlease enter valid COD amount:")
+            await msg.edit_text(f"⚠️ Invalid COD: {cod_value}\n\nEnter valid amount:")
             return
 
         existing = find_by_phone(d.get("phone",""))
@@ -544,6 +640,8 @@ async def do_create(update, ctx, text):
             f"✅ Parsed:\n"
             f"Name: {d.get('name','')}\n"
             f"Phone: {d.get('phone','')}\n"
+            f"Address: {d.get('address','')}\n"
+            f"Landmark: {d.get('address2','NA')}\n"
             f"City: {d.get('city','')}, {d.get('pincode','')}\n"
             f"State: {d.get('state','')}\n"
             f"Product: {d.get('product','')}\n"
@@ -570,24 +668,29 @@ async def do_create_shipment(update_or_q, ctx):
         try:
             cod_amount = float(re.sub(r"[^\d.]", "", d.get("cod", "0")))
             if cod_amount <= 0:
-                await msg.edit_text("❌ Invalid COD amount. Operation cancelled.")
-                ctx.user_data.clear()
-                return
+                await msg.edit_text("❌ Invalid COD. Cancelled.")
+                ctx.user_data.clear(); return
         except:
-            await msg.edit_text("❌ Invalid COD amount. Operation cancelled.")
-            ctx.user_data.clear()
-            return
+            await msg.edit_text("❌ Invalid COD. Cancelled.")
+            ctx.user_data.clear(); return
 
         pickup_obj = resolve_pickup(d.get("pickup",""))
         if not pickup_obj:
-            await msg.edit_text("❌ Pickup location not found.")
-            ctx.user_data.clear()
-            return
+            await msg.edit_text("❌ Pickup not found.")
+            ctx.user_data.clear(); return
 
         pickup_display = pickup_obj.get("pickup_location","")
         pickup_pin     = str(pickup_obj.get("pin_code","560001"))
         delivery_pin   = str(d.get("pincode","560001"))
         order_id       = f"OBX{int(time.time())}_{uuid.uuid4().hex[:5]}"
+
+        # Weight from products.json — no hardcode
+        weight = float(prod["weight"])
+        log.info(f"Booking weight: {weight}kg for {prod_name}")
+
+        # BUG2 FIX: Payment mode — PREPAID or COD from parsed order
+        is_prepaid = d.get("payment_mode","").strip().upper() == "PREPAID"
+        sr_payment  = "Prepaid" if is_prepaid else "COD"
 
         payload = {
             "order_id": order_id,
@@ -596,6 +699,7 @@ async def do_create_shipment(update_or_q, ctx):
             "billing_customer_name": d.get("name","Customer"),
             "billing_last_name": ".",
             "billing_address": d.get("address",""),
+            "billing_address_2": d.get("address2",""),     # BUG1 FIX: landmark
             "billing_city": d.get("city",""),
             "billing_state": d.get("state","Karnataka"),
             "billing_country": "India",
@@ -605,10 +709,13 @@ async def do_create_shipment(update_or_q, ctx):
             "billing_phone": d.get("phone",""),
             "shipping_is_billing": True,
             "order_items": [{"name":prod_name,"sku":prod_name,"units":1,"selling_price":cod_amount,"discount":"0","tax":"0","hsn":""}],
-            "payment_method": "COD", "sub_total": cod_amount, "cod_amount": cod_amount,
+            "payment_method": sr_payment,
+            "sub_total": cod_amount,
             "length": float(prod["length"]), "breadth": float(prod["breadth"]),
-            "height": float(prod["height"]), "weight": float(prod["weight"]),
+            "height": float(prod["height"]), "weight": weight,
         }
+        if not is_prepaid:
+            payload["cod_amount"] = cod_amount
 
         ensure_token()
         r = session.post(f"{SR_BASE}/orders/create/adhoc", json=payload, timeout=45)
@@ -617,122 +724,151 @@ async def do_create_shipment(update_or_q, ctx):
             if "wallet" in body.lower(): await msg.edit_text("❌ Insufficient wallet balance")
             elif "pincode" in body.lower(): await msg.edit_text(f"❌ Invalid pincode: {delivery_pin}")
             else: await msg.edit_text(f"❌ Failed: {body[:200]}")
-            ctx.user_data.clear()
-            return
+            ctx.user_data.clear(); return
 
         resp        = r.json()
         shipment_id = resp.get("shipment_id")
-        await msg.edit_text("⏳ Assigning courier...")
+        await msg.edit_text("⏳ Assigning courier (Surface, Bluedart first)...")
 
-        couriers = get_couriers(pickup_pin, delivery_pin, prod["weight"], True)
+        couriers = get_couriers(pickup_pin, delivery_pin, weight, True)
         if not couriers:
             await msg.edit_text(f"❌ No courier for {delivery_pin}")
-            ctx.user_data.clear()
+            ctx.user_data.clear(); return
+
+        awb, chosen, need_manual, surface_couriers = select_courier(couriers, shipment_id)
+
+        if need_manual:
+            # Neither Bluedart nor Delhivery worked — ask user to pick
+            ud.update({
+                "state": "manual_courier_pick",
+                "pending_shipment_id": shipment_id,
+                "pending_order_id": order_id,
+                "pending_sr_resp": resp,
+                "pending_d": d,
+                "pending_prod_name": prod_name,
+                "pending_cod": cod_amount,
+                "pending_pickup_display": pickup_display,
+                "pending_creative": creative,
+                "pending_surface_couriers": surface_couriers,
+            })
+            lines = ["⚠️ *Bluedart & Delhivery unavailable.*\nPick a courier:\n"]
+            for i, c in enumerate(surface_couriers[:10], 1):
+                lines.append(f"{i}. {c.get('courier_name','')} — ₹{c.get('rate',0)}")
+            await reply.reply_text("\n".join(lines), parse_mode="Markdown")
             return
 
-        sorted_c = sorted(couriers, key=lambda c: priority_rank(c.get("courier_name","")))
-        awb = None
-        chosen = None
-        fallback = False
-
-        for c in sorted_c:
-            cid = c.get("courier_company_id") or c.get("courier_id")
-            if priority_rank(c.get("courier_name","")) == 999:
-                fallback = True
-            awb = assign_awb(shipment_id, cid)
-            if awb:
-                chosen = c
-                break
-
-        if not awb:
-            await msg.edit_text("❌ Courier assignment failed.")
-            ctx.user_data.clear()
-            return
-
-        tracking  = f"https://shiprocket.co/tracking/{awb}"
-        order_num = next_order_number()
-
-        order_record = {
-            "order_id": order_id,
-            "order_number": order_num,
-            "created_at": datetime.now().isoformat(),
-            "phone": d.get("phone",""),
-            "customer_name": d.get("name",""),
-            "address": d.get("address",""),
-            "city": d.get("city",""),
-            "state": d.get("state","Karnataka"),
-            "pincode": delivery_pin,
-            "product": prod_name,
-            "creative": creative,
-            "total": cod_amount,
-            "cod_amount": cod_amount,
-            "courier_paid": COURIER_CHARGES,
-            "advance_paid": None,
-            "status": "active",
-            "pickup_location": pickup_display,
-            "shiprocket": {
-                "order_id": resp.get("order_id",""),
-                "shipment_id": shipment_id,
-                "awb": awb,
-                "courier": chosen.get("courier_name",""),
-                "rate": chosen.get("rate",0),
-                "tracking": tracking
-            },
-            "manual": None,
-            "label_downloaded": False,
-            "label_downloaded_date": "",
-        }
-
-        save_order(order_record)
-        courier_note = "⚠️ Fallback" if fallback else "✅ Priority"
-
-        # ── Auto write to Events tab + upload to Meta Dataset ──
-        meta_status = "⚠️ Meta skipped"
-        try:
-            meta_status = process_new_order(order_record)
-            log.info(f"Meta result: {meta_status}")
-        except Exception as e:
-            log.error(f"Meta error: {e}")
-
-        await msg.edit_text(
-            f"✅ *Shipment Created!*\n"
-            f"Order: #{order_num} | {d.get('name','')} | {d.get('phone','')}\n"
-            f"City: {d.get('city','')}, {delivery_pin}\n"
-            f"State: {d.get('state','Karnataka')}\n"
-            f"Product: {prod_name} | Creative: {creative or '—'}\n"
-            f"COD: ₹{int(cod_amount):,} | Courier: ₹{COURIER_CHARGES}\n"
-            f"Vendor: {pickup_display} | {chosen.get('courier_name','')} {courier_note}\n"
-            f"AWB: `{awb}`\n"
-            f"Tracking: {tracking}\n\n"
-            f"---\n"
-            f"{meta_status}",
-            parse_mode="Markdown")
-
-        label_url = generate_label(shipment_id)
-        if label_url:
-            try:
-                async with aiohttp.ClientSession() as s:
-                    async with s.get(label_url) as r2:
-                        if r2.status == 200:
-                            await reply.reply_document(
-                                document=await r2.read(),
-                                filename=f"{awb}.pdf",
-                                caption=f"📄 {d.get('name','')} | {awb}")
-            except Exception as e:
-                log.error(f"Label: {e}")
-
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Schedule Pickup", callback_data=f"pickup_yes_{shipment_id}_{order_id}"),
-            InlineKeyboardButton("🔄 Reassign", callback_data=f"action_reassign_{order_id}"),
-            InlineKeyboardButton("❌ Cancel", callback_data=f"action_cancel_{order_id}"),
-        ]])
-        await reply.reply_text("Shipment action:", reply_markup=kb)
+        await _finish_shipment_after_awb(reply, ctx, awb, chosen,
+            order_id=order_id, resp=resp, d=d,
+            prod_name=prod_name, cod_amount=cod_amount,
+            pickup_display=pickup_display, delivery_pin=delivery_pin,
+            weight=weight, shipment_id=shipment_id, creative=creative)
 
     except Exception as e:
         log.error(f"Create: {e}", exc_info=True)
         await msg.edit_text(f"❌ Error: {e}")
     finally:
         ctx.user_data.clear()
+
+async def _finish_shipment_after_awb(reply, ctx, awb, chosen,
+    order_id=None, resp=None, d=None,
+    prod_name=None, cod_amount=None,
+    pickup_display=None, delivery_pin=None,
+    weight=None, shipment_id=None, creative=None):
+    """Shared finalization: save order, send confirmation, generate label."""
+
+    ud = ctx.user_data
+    # If called from manual_courier_pick state, restore pending context
+    if order_id is None:
+        order_id       = ud.get("pending_order_id")
+        resp           = ud.get("pending_sr_resp",{})
+        d              = ud.get("pending_d",{})
+        prod_name      = ud.get("pending_prod_name","Projector")
+        cod_amount     = ud.get("pending_cod",0)
+        pickup_display = ud.get("pending_pickup_display","")
+        creative       = ud.get("pending_creative","")
+        shipment_id    = ud.get("pending_shipment_id")
+        delivery_pin   = str(d.get("pincode","560001")) if d else "560001"
+
+    tracking  = f"https://shiprocket.co/tracking/{awb}"
+    order_num = next_order_number()
+
+    order_record = {
+        "order_id": order_id,
+        "order_number": order_num,
+        "created_at": datetime.now().isoformat(),
+        "phone": d.get("phone",""),
+        "customer_name": d.get("name",""),
+        "address": d.get("address",""),
+        "address2": d.get("address2",""),              # ← SAVED in record
+        "city": d.get("city",""),
+        "state": d.get("state","Karnataka"),
+        "pincode": delivery_pin,
+        "product": prod_name,
+        "creative": creative,
+        "total": cod_amount,
+        "cod_amount": cod_amount,
+        "payment_method": sr_payment,
+        "courier_paid": COURIER_CHARGES,
+        "advance_paid": None,
+        "status": "active",
+        "pickup_location": pickup_display,
+        "shiprocket": {
+            "order_id": resp.get("order_id",""),
+            "shipment_id": shipment_id,
+            "awb": awb,
+            "courier": chosen.get("courier_name",""),
+            "rate": chosen.get("rate",0),
+            "tracking": tracking
+        },
+        "manual": None,
+        "label_downloaded": False,
+        "label_downloaded_date": "",
+    }
+
+    save_order(order_record)
+
+    meta_status = "⚠️ Meta skipped"
+    try:
+        meta_status = process_new_order(order_record)
+    except Exception as e:
+        log.error(f"Meta error: {e}")
+
+    courier_label = chosen.get("courier_name","")
+    await reply.reply_text(
+        f"✅ *Shipment Created!*\n"
+        f"Order: #{order_num} | {d.get('name','')} | {d.get('phone','')}\n"
+        f"Address: {d.get('address','')}\n"
+        f"Landmark: {d.get('address2','—')}\n"
+        f"City: {d.get('city','')}, {delivery_pin}\n"
+        f"State: {d.get('state','Karnataka')}\n"
+        f"Product: {prod_name} | Creative: {creative or '—'}\n"
+        f"COD: ₹{int(cod_amount):,} | Courier: ₹{COURIER_CHARGES}\n"
+        f"Vendor: {pickup_display} | {courier_label}\n"
+        f"AWB: `{awb}`\n"
+        f"Tracking: {tracking}\n\n"
+        f"{meta_status}",
+        parse_mode="Markdown")
+
+    label_url = generate_label(shipment_id)
+    if label_url:
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(label_url) as r2:
+                    if r2.status == 200:
+                        await reply.reply_document(
+                            document=await r2.read(),
+                            filename=f"{awb}.pdf",
+                            caption=f"📄 {d.get('name','')} | {awb}")
+        except Exception as e:
+            log.error(f"Label: {e}")
+
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Schedule Pickup", callback_data=f"pickup_yes_{shipment_id}_{order_id}"),
+        InlineKeyboardButton("🔄 Reassign", callback_data=f"action_reassign_{order_id}"),
+        InlineKeyboardButton("❌ Cancel", callback_data=f"action_cancel_{order_id}"),
+    ]])
+    await reply.reply_text("Shipment action:", reply_markup=kb)
+    ctx.user_data.clear()
 
 # ─── SEARCH ───────────────────────────────
 async def do_search(update, ctx, text):
@@ -788,11 +924,10 @@ async def do_rebook_new_cod(update, ctx, new_cod):
     ok, awb_or_err, shipment_id = do_rebook_shipment(o, new_cod)
     if not ok:
         await msg.edit_text(f"❌ Failed: {awb_or_err}")
-        ud.clear()
-        return
+        ud.clear(); return
     await msg.edit_text(
-        f"✅ Rebooked!\nNew AWB: {awb_or_err}\nNew COD: ₹{new_cod:,}\nAdvance: ₹{ud.get('adv_advance',0)} ✅",
-        reply_markup=MAIN_KB)
+        f"✅ Rebooked!\nNew AWB: `{awb_or_err}`\nNew COD: ₹{new_cod:,}\nAdvance: ₹{ud.get('adv_advance',0)} ✅",
+        parse_mode="Markdown", reply_markup=MAIN_KB)
     label_url = generate_label(shipment_id)
     if label_url:
         try:
@@ -826,8 +961,7 @@ async def show_label_menu(update, ctx):
 async def show_label_products(q, vendor):
     products = get_products_for_vendor(vendor)
     if not products:
-        await q.message.reply_text("No labels for this vendor")
-        return
+        await q.message.reply_text("No labels for this vendor"); return
     kb_rows = []
     for p in products:
         total, adv = get_label_counts(vendor, p)
@@ -847,8 +981,7 @@ async def show_label_filter(q, vendor, product):
 
 async def do_download_labels(update, orders):
     if not orders:
-        await update.callback_query.message.reply_text("No labels")
-        return
+        await update.callback_query.message.reply_text("No labels"); return
     await update.callback_query.message.reply_text(f"⏳ Generating {len(orders)} labels...")
     downloaded = 0
     for o in orders:
@@ -879,15 +1012,16 @@ async def show_products(update, ctx):
     products = json.load(open(PRODUCTS_FILE)) if os.path.exists(PRODUCTS_FILE) else {}
     if not products:
         ctx.user_data["state"] = "prod_add"
-        await update.message.reply_text("No products.\nSend: Name length breadth height weight")
-        return
+        await update.message.reply_text("No products.\nSend: Name length breadth height weight"); return
     for name, p in products.items():
+        w = float(p['weight'])
+        weight_warn = ""
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("✏️ Edit", callback_data=f"prod_edit_{name}"),
             InlineKeyboardButton("🗑 Delete", callback_data=f"prod_del_{name}"),
         ]])
         await update.message.reply_text(
-            f"*{name}*\n{p['length']}×{p['breadth']}×{p['height']}cm | {p['weight']}kg",
+            f"*{name}*\n{p['length']}×{p['breadth']}×{p['height']}cm | {w}kg{weight_warn}",
             parse_mode="Markdown", reply_markup=kb)
     await update.message.reply_text(
         "Products ↑",
@@ -897,15 +1031,15 @@ async def show_products(update, ctx):
 async def do_add_product(update, ctx, text):
     parts = text.strip().split()
     if len(parts) < 5:
-        await update.message.reply_text("Format: Name length breadth height weight")
-        return
+        await update.message.reply_text("Format: Name length breadth height weight"); return
     try:
         l,b,h,w = float(parts[-4]),float(parts[-3]),float(parts[-2]),float(parts[-1])
         name = " ".join(parts[:-4])
         products = json.load(open(PRODUCTS_FILE)) if os.path.exists(PRODUCTS_FILE) else {}
         products[name] = {"length":l,"breadth":b,"height":h,"weight":w}
         json.dump(products, open(PRODUCTS_FILE,"w"), indent=2)
-        await update.message.reply_text(f"✅ Saved: {name}", reply_markup=MAIN_KB)
+        warn = ""
+        await update.message.reply_text(f"✅ Saved: {name}{warn}", reply_markup=MAIN_KB)
     except:
         await update.message.reply_text("Invalid. Format: Name l b h w", reply_markup=MAIN_KB)
     ctx.user_data.clear()
@@ -933,6 +1067,7 @@ async def do_reassign_courier(update, ctx, chosen_courier):
     delivery_pin = str(o.get("pincode","560001"))
     new_order_id = f"OBX{int(time.time())}_{uuid.uuid4().hex[:5]}"
     cod_amount   = o.get("cod_amount",0)
+    weight = float(prod["weight"])  # from products.json
     payload = {
         "order_id": new_order_id,
         "order_date": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
@@ -940,6 +1075,7 @@ async def do_reassign_courier(update, ctx, chosen_courier):
         "billing_customer_name": o.get("customer_name",""),
         "billing_last_name": ".",
         "billing_address": o.get("address",""),
+        "billing_address_2": o.get("address2",""),             # ← LANDMARK
         "billing_city": o.get("city",""),
         "billing_state": o.get("state","Karnataka"),
         "billing_country": "India",
@@ -949,11 +1085,13 @@ async def do_reassign_courier(update, ctx, chosen_courier):
         "billing_phone": o.get("phone",""),
         "shipping_is_billing": True,
         "order_items": [{"name":prod_name,"sku":prod_name,"units":1,"selling_price":cod_amount,"discount":"0","tax":"0","hsn":""}],
-        "payment_method": "COD",
-        "sub_total": cod_amount, "cod_amount": cod_amount,
+        "payment_method": o.get("payment_method","COD"),
+        "sub_total": cod_amount,
         "length": float(prod["length"]), "breadth": float(prod["breadth"]),
-        "height": float(prod["height"]), "weight": float(prod["weight"]),
+        "height": float(prod["height"]), "weight": weight,
     }
+    if o.get("payment_method","COD") == "COD":
+        payload["cod_amount"] = cod_amount
     ensure_token()
     r = session.post(f"{SR_BASE}/orders/create/adhoc", json=payload, timeout=45)
     if r.status_code != 200:
@@ -974,8 +1112,8 @@ async def do_reassign_courier(update, ctx, chosen_courier):
                     "awb": awb, "courier": chosen_courier.get("courier_name",""),
                     "rate": chosen_courier.get("rate",0), "tracking": tracking})
     await update.message.reply_text(
-        f"✅ Reassigned!\nNew: {chosen_courier.get('courier_name','')} | AWB: {awb}",
-        reply_markup=MAIN_KB)
+        f"✅ Reassigned!\n{chosen_courier.get('courier_name','')} | AWB: `{awb}`",
+        parse_mode="Markdown", reply_markup=MAIN_KB)
     label_url = generate_label(shipment_id)
     if label_url:
         try:
@@ -1002,6 +1140,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         d = ud.get("create_parsed",{})
         await q.message.reply_text(
             f"✅ Parsed:\nName: {d.get('name','')}\nPhone: {d.get('phone','')}\n"
+            f"Address: {d.get('address','')}\nLandmark: {d.get('address2','NA')}\n"
             f"City: {d.get('city','')}, {d.get('pincode','')}\nState: {d.get('state','')}\n"
             f"Product: {d.get('product','')}\nCOD: ₹{int(float(d.get('cod',0))):,}\n\n"
             f"Enter creative code (or type 'skip'):")
@@ -1062,13 +1201,14 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         couriers = get_available_couriers_for_order(o)
         if not couriers:
             await q.message.reply_text("❌ No couriers available"); return
-        sorted_c = sorted(couriers, key=lambda c: priority_rank(c.get("courier_name","")))[:10]
+        surface = [c for c in couriers if is_surface(c)] or couriers
+        sorted_c = sorted(surface, key=courier_auto_rank)[:10]
         ud.update({"reassign_order_id": order_id, "reassign_order": o,
                     "reassign_couriers": sorted_c, "state": "reassign_select"})
-        lines = ["🔄 *Available Couriers:*\n"]
+        lines = ["🔄 *Available Couriers (Surface):*\n"]
         for i,c in enumerate(sorted_c,1):
-            rank = "Priority" if priority_rank(c.get("courier_name","")) < 999 else "Standard"
-            lines.append(f"{i}. {c.get('courier_name','')} — ₹{c.get('rate',0)} ({rank})")
+            tag = "⭐ Priority" if courier_auto_rank(c) < 2 else "Standard"
+            lines.append(f"{i}. {c.get('courier_name','')} — ₹{c.get('rate',0)} ({tag})")
         await q.message.reply_text("\n".join(lines), parse_mode="Markdown")
         return
 
@@ -1149,7 +1289,6 @@ async def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # ── Daily scheduler at 11:00 PM IST ──
     async def scheduled_upload():
         log.info("Scheduled Meta upload starting...")
         result = run_upload()
