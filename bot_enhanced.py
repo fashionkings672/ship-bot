@@ -131,9 +131,12 @@ def get_couriers(pp, dp, weight, cod):
 def is_surface(c):
     mode = str(c.get("mode", "")).lower()
     name = str(c.get("courier_name", "")).lower()
-    # Bluedart is mislabelled as Air in Shiprocket API — force treat as surface
-    if "bluedart" in name or "blue dart" in name:
-        return True
+    # Ban Air by mode
+    if "air" in mode:
+        return False
+    # Ban Air by name (e.g. "Blue Dart Air") unless name also has "surface"
+    if "air" in name and "surface" not in name:
+        return False
     return "surface" in mode or "surface" in name
 
 def courier_auto_rank(c):
@@ -156,7 +159,9 @@ def courier_auto_rank(c):
     return 99
 
 def select_courier(couriers, shipment_id):
-    surface = [c for c in couriers if is_surface(c)] or couriers
+    surface = [c for c in couriers if is_surface(c)]
+    if not surface:
+        surface = couriers
 
     auto = [c for c in surface if courier_auto_rank(c) < 99]
     auto_sorted = sorted(auto, key=courier_auto_rank)
@@ -165,8 +170,11 @@ def select_courier(couriers, shipment_id):
     chosen = None
     for c in auto_sorted:
         cid = c.get("courier_company_id") or c.get("courier_id")
-        awb = assign_awb(shipment_id, cid)
-        if awb:
+        result = assign_awb(shipment_id, cid)
+        if result == "WALLET_LOW":
+            return "WALLET_LOW", None, False, surface
+        if result:
+            awb = result
             chosen = c
             break
 
@@ -174,7 +182,6 @@ def select_courier(couriers, shipment_id):
         return awb, chosen, False, surface
     else:
         return None, None, True, surface
-
 
 # ─── END COURIER HELPERS ──────────────────────────────────────────────────────
 
@@ -192,6 +199,10 @@ def assign_awb(shipment_id, courier_id=None):
     r = sr_post("/courier/assign/awb", payload)
     if r.get("awb_assign_status") == 1:
         return r["response"]["data"]["awb_code"]
+    # Detect wallet/balance errors
+    err = str(r).lower()
+    if any(w in err for w in ["wallet", "balance", "recharge", "insufficient", "credit"]):
+        return "WALLET_LOW"
     return None
 
 def generate_label(shipment_id):
@@ -733,6 +744,10 @@ async def do_create_shipment(update_or_q, ctx):
             ctx.user_data.clear(); return
 
         awb, chosen, need_manual, surface_couriers = select_courier(couriers, shipment_id)
+
+        if awb == "WALLET_LOW":
+            await msg.edit_text("❌ Shiprocket wallet low — please recharge and retry.")
+            ctx.user_data.clear(); return
 
         if need_manual:
             # Neither Bluedart nor Delhivery worked — ask user to pick
