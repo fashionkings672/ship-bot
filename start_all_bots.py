@@ -2,7 +2,7 @@
 start_all_bots.py - Run both Oneboxx shipping bots together.
 Handles:
 - bot.py (first shipping bot)
-- bot_enhanced.py (main shipping bot with Meta upload)
+- bot_enhanced.py (main sshipping bot with Meta upload)
 """
 
 import asyncio
