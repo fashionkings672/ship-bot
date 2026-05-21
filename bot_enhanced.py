@@ -320,7 +320,7 @@ def do_rebook_shipment(o, new_cod):
     return True, awb, shipment_id
 
 # ─── AI PARSER (Gemini 2.0 Flash — FREE) ──────────────────────────────────────
-PARSE_PROMPT = """Extract from this order text. Output EXACTLY this format:
+PARSE_PROMPT = """Extract from this order text. Output EXACTLY these 12 lines only, no extra text:
 Pickup: <pickup_location>
 Product: <product_name>
 Name: <full_name>
@@ -335,38 +335,42 @@ Payment_Mode: <COD_or_PREPAID>
 Amount: <number_only_or_MISSING>
 
 Rules:
+- Output ONLY the 12 lines above. No preamble, no explanation, nothing else.
 - Address = house/door number + street/village/locality (e.g. "a/p Nipanal" or "124/3 Kembathahalli Road Gottigere"). Keep all local identifiers exactly as written.
 - Address2 = landmark clue only (near/opposite/behind phrases, area names like "Vidya Nagar"). NA if none. NEVER leave this blank if customer mentioned a landmark.
 - City = district or city name ONLY (e.g. "Belagavi", "Bangalore"). Never put village or locality in City.
 - Never put City name inside Address field — they are separate.
-- State: derive from Pincode if not mentioned (591222 = Karnataka, 560xxx = Karnataka, etc).
-- Phone: exactly 10 digits, strip +91 or 91 prefix. If two numbers given, use the first/primary one.
+- State: derive from Pincode if not mentioned (560xxx/570xxx/580xxx/590xxx = Karnataka, 400xxx = Maharashtra, 110xxx = Delhi, 500xxx = Telangana, 600xxx = Tamil Nadu).
+- Phone: exactly 10 digits, strip +91 or 91 prefix. First number if two given.
 - Alt_Phone: second number if present, else NA.
-- Payment_Mode: COD or PREPAID only.
+- Payment_Mode: PREPAID if text contains prepaid/paid/online/upi/gpay/phonepay/paytm/neft. COD otherwise.
 - Amount: digits only, no ₹ or commas. MISSING if not found.
 
 Text:
 {text}"""
 
 def ai_parse(text):
-    """Parse order text using Gemini 2.0 Flash (free, fast)."""
-    prompt = PARSE_PROMPT.format(text=text)
-    response = _gemini_model.generate_content(
-        prompt,
-        generation_config=genai.GenerationConfig(
-            temperature=0.1,
-            max_output_tokens=512,
-        )
-    )
-    return response.text.strip()
+   """Parse order text using Gemini (fast, accurate)."""
+   prompt = PARSE_PROMPT.format(text=text)
+   response = _gemini_model.generate_content(
+       prompt,
+       generation_config=genai.GenerationConfig(
+           temperature=0.1,
+           max_output_tokens=300,
+       )
+   )
+   result = response.text.strip()
+   log.info(f"Gemini parsed:\n{result}")
+   return result
 
 def parse_fields(text):
-    data = {}
-    for line in text.splitlines():
-        if ":" in line:
-            k, v = line.split(":", 1)
-            data[k.strip().lower()] = v.strip()
-    return data
+   data = {}
+   for line in text.splitlines():
+       if ":" in line:
+           k, v = line.split(":", 1)
+           data[k.strip().lower()] = v.strip()
+   return data
+
 
 # ─── KEYBOARDS ────────────────────────────
 MAIN_KB = ReplyKeyboardMarkup([
