@@ -50,7 +50,7 @@ if not GEMINI_API_KEY:   raise ValueError("GEMINI_API_KEY not set")
 
 # ─── GEMINI SETUP ─────────────────────────
 genai.configure(api_key=GEMINI_API_KEY)
-_gemini_model = genai.GenerativeModel("gemini-2.0-flash-001")
+_gemini_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("bot")
 
