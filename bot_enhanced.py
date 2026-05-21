@@ -141,66 +141,89 @@ def is_surface(c):
 def courier_auto_rank(c):
     """
     Uses courier_priority.json first.
-    Fallback hardcoded: Bluedart=0, Delhivery=1, Ekart=2, DTDC=3, else=99
+    Hardcoded fallback uses HIGH numbers so priority file always wins.
     """
     name = str(c.get("courier_name", ""))
-    # Try priority file first
+    n = name.lower()
+    # Always ban air
+    if "air" in n:
+        return 9999
+    # Priority file first
     pr = priority_rank(name)
     if pr != 999:
         return pr
-    # Hardcoded fallback
-    n = name.lower()
+    # Hardcoded fallback — high numbers so they NEVER beat priority file
     if "bluedart" in n or "blue dart" in n:
-        return 0
+        return 10
     if "delhivery" in n:
-        return 1
+        return 20
     if "ekart" in n or "e-kart" in n:
-        return 2
+        return 30
     if "dtdc" in n:
-        return 3
+        return 40
     return 99
 
 
 def select_courier(couriers, shipment_id):
+    # Step 1: surface only, air already banned in is_surface + courier_auto_rank
     surface = [c for c in couriers if is_surface(c)]
-    log.info(f"Surface couriers: {[c.get('courier_name') for c in surface]}")
+    log.info(f"Surface couriers ({len(surface)}): {[c.get('courier_name') for c in surface]}")
     if not surface:
+        log.warning("No surface couriers — using all as fallback")
         surface = couriers
 
-    auto = [c for c in surface if courier_auto_rank(c) < 99]
-    auto_sorted = sorted(auto, key=courier_auto_rank)
-    log.info(f"Auto-rank order: {[(c.get('courier_name'), courier_auto_rank(c)) for c in auto_sorted]}")
+    # Step 2: rank ALL surface couriers
+    ranked = sorted(surface, key=courier_auto_rank)
+    log.info(f"Ranked order: {[(c.get('courier_name'), courier_auto_rank(c)) for c in ranked]}")
 
+    # Step 3: try in order, skip rank>=99 (those go to manual)
     awb = None
     chosen = None
-    for c in auto_sorted:
+    for c in ranked:
+        rank = courier_auto_rank(c)
+        if rank >= 99:
+            log.info(f"Skipping {c.get('courier_name')} rank={rank} — manual zone")
+            continue
         cid = c.get("courier_company_id") or c.get("courier_id")
-        log.info(f"Trying: {c.get('courier_name')} id={cid}")
+        log.info(f"Trying: {c.get('courier_name')} rank={rank} id={cid}")
         result = assign_awb(shipment_id, cid)
-        log.info(f"Result for {c.get('courier_name')}: {result}")
         if result == "WALLET_LOW":
+            log.warning("Wallet low")
             return "WALLET_LOW", None, False, surface
         if result:
+            log.info(f"✅ AWB success: {result} via {c.get('courier_name')}")
             awb = result
             chosen = c
             break
         else:
-            log.warning(f"AWB failed for {c.get('courier_name')} — trying next")
+            log.warning(f"❌ AWB failed for {c.get('courier_name')} — next")
 
     if awb:
         return awb, chosen, False, surface
     else:
-        return None, None, True, surface
+        log.warning("All auto couriers failed — manual pick")
+        return None, None, True, [c for c in surface if courier_auto_rank(c) < 9999]
+
 
 # ─── END COURIER HELPERS ──────────────────────────────────────────────────────
 
 def priority_rank(name):
     if not os.path.exists(COURIER_PRIORITY_FILE): return 999
     prio = json.load(open(COURIER_PRIORITY_FILE))
-    n = name.lower()
-    for k,v in prio.items():
-        if k.lower() in n or n in k.lower(): return v
+    n = name.lower().strip()
+    # Exact match first
+    for k, v in prio.items():
+        if k.lower().strip() == n:
+            log.info(f"priority_rank EXACT: '{name}' → {v}")
+            return v
+    # Partial match — key inside courier name
+    for k, v in prio.items():
+        if k.lower().strip() in n:
+            log.info(f"priority_rank PARTIAL: '{name}' matched '{k}' → {v}")
+            return v
+    log.info(f"priority_rank NO MATCH: '{name}' → 999")
     return 999
+
 
 def assign_awb(shipment_id, courier_id=None):
     payload = {"shipment_id": shipment_id}
