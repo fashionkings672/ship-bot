@@ -350,26 +350,88 @@ Text:
 {text}"""
 
 def ai_parse(text):
-   """Parse order text using Gemini (fast, accurate)."""
-   prompt = PARSE_PROMPT.format(text=text)
-   response = _gemini_model.generate_content(
-       prompt,
-       generation_config=genai.GenerationConfig(
-           temperature=0.1,
-           max_output_tokens=300,
-       )
-   )
-   result = response.text.strip()
-   log.info(f"Gemini parsed:\n{result}")
-   return result
+    """Robust Gemini parser"""
+
+    prompt = PARSE_PROMPT.format(text=text)
+
+    try:
+        response = _gemini_model.generate_content(
+            prompt,
+            generation_config={
+                "temperature": 0,
+                "max_output_tokens": 300,
+            }
+        )
+
+        result = ""
+
+        # New Gemini response handling
+        if hasattr(response, "text") and response.text:
+            result = response.text.strip()
+
+        elif hasattr(response, "candidates") and response.candidates:
+            parts = response.candidates[0].content.parts
+            result = "".join(
+                [p.text for p in parts if hasattr(p, "text")]
+            ).strip()
+
+        else:
+            log.error(f"Empty Gemini response: {response}")
+            return ""
+
+        # Remove markdown formatting
+        result = (
+            result.replace("```", "")
+            .replace("*", "")
+            .strip()
+        )
+
+        log.info(f"Gemini parsed:\n{result}")
+
+        return result
+
+    except Exception as e:
+        log.error(f"Gemini parse failed: {e}", exc_info=True)
+        return ""
 
 def parse_fields(text):
-   data = {}
-   for line in text.splitlines():
-       if ":" in line:
-           k, v = line.split(":", 1)
-           data[k.strip().lower()] = v.strip()
-   return data
+
+    data = {}
+
+    expected_keys = [
+        "pickup",
+        "product",
+        "name",
+        "address",
+        "address2",
+        "city",
+        "state",
+        "pincode",
+        "phone",
+        "alt_phone",
+        "payment_mode",
+        "amount"
+    ]
+
+    for line in text.splitlines():
+
+        line = line.strip()
+
+        if ":" not in line:
+            continue
+
+        k, v = line.split(":", 1)
+
+        k = k.strip().lower()
+        v = v.strip()
+
+        data[k] = v
+
+    for k in expected_keys:
+        if k not in data:
+            data[k] = ""
+
+    return data
 
 
 # ─── KEYBOARDS ────────────────────────────
