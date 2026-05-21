@@ -1,6 +1,8 @@
-""""
-start_all_bots.py - Run Oneboxx shipping bot.
-Runs bot_enhanced.py only (uses Gemini 2.0 Flash for parsing).
+"""
+start_all_bots.py - Run both Oneboxx shipping bots together.
+Handles:
+- bot.py (first shipping bot)
+- bot_enhanced.py (main shipping bot with Meta upload)
 """
 
 import asyncio
@@ -33,19 +35,17 @@ bot_status = manager.dict()
 
 def check_environment():
     """Verify required environment variables exist."""
-    log.info("=" * 60)
-    log.info("ENVIRONMENT VARIABLES CHECK")
-    log.info("=" * 60)
+    log.info("🔍 Checking environment setup...")
 
     required_vars = [
-        ("BOT_TOKEN_2",             "Telegram bot token"),
-        ("GOOGLE_CREDENTIALS_JSON", "Google Sheets credentials"),
-        ("GOOGLE_SHEET_ID",         "Google Sheet ID"),
-        ("SHIPROCKET_EMAIL",        "Shiprocket email"),
-        ("SHIPROCKET_PASSWORD",     "Shiprocket password"),
-        ("GEMINI_API_KEY",          "Gemini API key (aistudio.google.com)"),
-        ("META_ACCESS_TOKEN",       "Meta access token"),
-        ("META_DATASET_ID",         "Meta offline event set ID"),
+        ("BOT_TOKEN",              "First shipping bot token"),
+        ("BOT_TOKEN_2",            "Main shipping bot token"),
+        ("GOOGLE_CREDENTIALS_JSON","Google Sheets credentials"),
+        ("GOOGLE_SHEET_ID",        "Google Sheet ID"),
+        ("SHIPROCKET_EMAIL",       "Shiprocket email"),
+        ("SHIPROCKET_PASSWORD",    "Shiprocket password"),
+        ("META_ACCESS_TOKEN",      "Meta access token (for uploader)"),
+        ("META_DATASET_ID",        "Meta offline event set ID"),
     ]
 
     missing = []
@@ -57,16 +57,33 @@ def check_environment():
             log.info(f"✅ {var_name} OK")
 
     if missing:
-        log.error(f"🚨 MISSING {len(missing)} VARIABLES:")
+        log.error(f"🚨 MISSING {len(missing)} REQUIRED VARIABLES:")
         for m in missing:
             log.error(f"  • {m}")
         return False
 
-    log.info("✅ All environment variables OK!")
+    log.info("✅ Environment check passed!")
     return True
 
-def run_bot():
-    """Run bot_enhanced.py"""
+def run_bot1():
+    """Run first shipping bot (bot.py)"""
+    name = "Bot1"
+    try:
+        log.info(f"🚀 Starting {name}...")
+        bot_status[name] = "starting"
+        import bot
+        log.info(f"✅ {name} imported successfully")
+        bot_status[name] = "running"
+        asyncio.run(bot.main())
+        bot_status[name] = "stopped"
+        log.info(f"🛑 {name} stopped")
+    except Exception as e:
+        log.error(f"💥 {name} CRASHED: {e}", exc_info=True)
+        bot_status[name] = f"error: {str(e)}"
+        raise
+
+def run_bot2():
+    """Run enhanced shipping bot (bot_enhanced.py)"""
     name = "BotEnhanced"
     try:
         log.info(f"🚀 Starting {name}...")
@@ -82,39 +99,32 @@ def run_bot():
         bot_status[name] = f"error: {str(e)}"
         raise
 
-def is_proc_dead(proc):
-    """Safe check — avoids AssertionError when called from non-parent process."""
-    try:
-        return not proc.is_alive() and proc.exitcode is not None
-    except AssertionError:
-        return proc.exitcode is not None
-
-def monitor_bot(proc_holder):
-    """Monitor bot process and restart if it dies."""
-    log.info("👀 Bot monitor started...")
+def monitor_bots(processes):
+    """Monitor all bot processes and restart if needed."""
+    log.info("👀 Starting bot monitor...")
     while True:
-        time.sleep(10)
-        proc = proc_holder[0]
-        try:
-            if is_proc_dead(proc):
-                log.warning(f"⚠️ BotEnhanced died (exit code {proc.exitcode}) — restarting...")
+        time.sleep(5)
+        for i, proc in enumerate(processes):
+            if not proc.is_alive() and proc.exitcode is not None:
+                log.warning(f"⚠️ Bot {i+1} ({proc.name}) died with exit code {proc.exitcode}")
                 try:
-                    new_proc = Process(target=run_bot, name="BotEnhanced")
+                    log.info(f"🔄 Attempting to restart {proc.name}...")
+                    new_proc = Process(target=proc._target, name=proc.name)
                     new_proc.start()
-                    proc_holder[0] = new_proc
-                    log.info(f"✅ BotEnhanced restarted (PID: {new_proc.pid})")
+                    processes[i] = new_proc
+                    log.info(f"✅ {proc.name} restarted successfully")
                 except Exception as e:
-                    log.error(f"❌ Restart failed: {e}")
-        except Exception as e:
-            log.error(f"❌ Monitor error: {e}")
+                    log.error(f"❌ Failed to restart {proc.name}: {e}")
 
 def signal_handler(signum, frame):
-    log.info(f"🛑 Signal {signum} received, shutting down...")
+    """Handle shutdown signals gracefully."""
+    log.info(f"🛑 Received signal {signum}, shutting down...")
     os._exit(0)
 
 def main():
+    """Main function to start both shipping bots."""
     log.info("=" * 60)
-    log.info("🚀 STARTING ONEBOXX BOT")
+    log.info("🚀 STARTING ONEBOXX SHIPPING BOTS")
     log.info("=" * 60)
 
     if not check_environment():
@@ -124,37 +134,46 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
 
+    processes = []
     try:
-        p = Process(target=run_bot, name="BotEnhanced")
-        p.start()
-        log.info(f"✅ BotEnhanced started (PID: {p.pid})")
+        # Start Bot 1
+        p1 = Process(target=run_bot1, name="Bot1")
+        p1.start()
+        processes.append(p1)
+        log.info(f"✅ Bot1 started (PID: {p1.pid})")
+        time.sleep(2)
+
+        # Start Bot 2 (enhanced)
+        p2 = Process(target=run_bot2, name="BotEnhanced")
+        p2.start()
+        processes.append(p2)
+        log.info(f"✅ BotEnhanced started (PID: {p2.pid})")
+        time.sleep(2)
 
         log.info("=" * 60)
-        log.info("🎉 BOT IS RUNNING!")
-        log.info("📊 Commands: /orders /report /uploadfb /adsspend /setcreative")
+        log.info("🎉 BOTH BOTS ARE RUNNING!")
+        log.info("📊 BotEnhanced commands: /orders, /report, /uploadfb, /adsspend, /setcreative")
         log.info("⏰ Meta upload auto-runs daily at 11:00 PM IST")
         log.info("=" * 60)
 
-        # Monitor in background
-        proc_holder = [p]
-        monitor = Process(target=monitor_bot, args=(proc_holder,), name="Monitor")
+        # Monitor
+        monitor = Process(target=monitor_bots, args=(processes,))
         monitor.start()
 
-        p.join()
+        for p in processes:
+            p.join()
 
     except KeyboardInterrupt:
-        log.info("🛑 Manual shutdown")
+        log.info("🛑 Manual shutdown requested")
     except Exception as e:
-        log.error(f"💥 Main error: {e}", exc_info=True)
+        log.error(f"💥 Main process error: {e}", exc_info=True)
     finally:
-        log.info("👋 Shutting down...")
-        try:
+        log.info("👋 Shutting down all bots...")
+        for p in processes:
             if p.is_alive():
                 p.terminate()
-        except Exception:
-            pass
         time.sleep(2)
-        log.info("✅ Bot shut down")
+        log.info("✅ All bots shut down")
         sys.exit(0)
 
 if __name__ == "__main__":
