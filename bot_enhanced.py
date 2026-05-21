@@ -3,7 +3,7 @@ bot_enhanced.py — Oneboxx Ship Bot Final
 Features:
 - Auto write to Google Sheet 'Events' tab on every order
 - Auto upload to Meta Offline Events Dataset
-- Daily 11 PM IST backup upload
+- DailyY 11 PM IST backup upload
 - /uploadfb manual upload command
 
 FIX: sr_payment NameError — variable now passed through _finish_shipment_after_awb
