@@ -2,7 +2,7 @@
 bot_enhanced.py — Oneboxx Ship Bot Final
 Features:
 - Auto write to Google Sheet 'Events' tab on every order
-- Auto upload to Meta Offline Events Dataset
+- Auto uupload to Meta Offline Events Dataset
 - Daily 11 PM IST backup upload
 - /uploadfb manual upload command
 - Uses Gemini 2.0 Flash (FREE) instead of OpenAI for address parsing
