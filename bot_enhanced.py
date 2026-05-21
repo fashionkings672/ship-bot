@@ -131,11 +131,10 @@ def get_couriers(pp, dp, weight, cod):
 def is_surface(c):
     mode = str(c.get("mode", "")).lower()
     name = str(c.get("courier_name", "")).lower()
-    # Ban Air by mode
+    # Ban ANYTHING with "air" in mode or name — no exceptions
     if "air" in mode:
         return False
-    # Ban Air by name (e.g. "Blue Dart Air") unless name also has "surface"
-    if "air" in name and "surface" not in name:
+    if "air" in name:
         return False
     return "surface" in mode or "surface" in name
 
