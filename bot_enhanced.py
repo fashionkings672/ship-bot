@@ -141,22 +141,26 @@ def is_surface(c):
 
 def courier_auto_rank(c):
     """
-    0 = Bluedart   (1st choice)
-    1 = Delhivery  (2nd)
-    2 = Ekart      (3rd)
-    3 = DTDC       (4th)
-    99 = everything else → ask user
+    Uses courier_priority.json first.
+    Fallback hardcoded: Bluedart=0, Delhivery=1, Ekart=2, DTDC=3, else=99
     """
-    name = str(c.get("courier_name", "")).lower()
-    if "bluedart" in name or "blue dart" in name:
+    name = str(c.get("courier_name", ""))
+    # Try priority file first
+    pr = priority_rank(name)
+    if pr != 999:
+        return pr
+    # Hardcoded fallback
+    n = name.lower()
+    if "bluedart" in n or "blue dart" in n:
         return 0
-    if "delhivery" in name:
+    if "delhivery" in n:
         return 1
-    if "ekart" in name or "e-kart" in name:
+    if "ekart" in n or "e-kart" in n:
         return 2
-    if "dtdc" in name:
+    if "dtdc" in n:
         return 3
     return 99
+
 
 def select_courier(couriers, shipment_id):
     surface = [c for c in couriers if is_surface(c)]
