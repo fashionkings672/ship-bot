@@ -160,23 +160,29 @@ def courier_auto_rank(c):
 
 def select_courier(couriers, shipment_id):
     surface = [c for c in couriers if is_surface(c)]
+    log.info(f"Surface couriers: {[c.get('courier_name') for c in surface]}")
     if not surface:
         surface = couriers
 
     auto = [c for c in surface if courier_auto_rank(c) < 99]
     auto_sorted = sorted(auto, key=courier_auto_rank)
+    log.info(f"Auto-rank order: {[(c.get('courier_name'), courier_auto_rank(c)) for c in auto_sorted]}")
 
     awb = None
     chosen = None
     for c in auto_sorted:
         cid = c.get("courier_company_id") or c.get("courier_id")
+        log.info(f"Trying: {c.get('courier_name')} id={cid}")
         result = assign_awb(shipment_id, cid)
+        log.info(f"Result for {c.get('courier_name')}: {result}")
         if result == "WALLET_LOW":
             return "WALLET_LOW", None, False, surface
         if result:
             awb = result
             chosen = c
             break
+        else:
+            log.warning(f"AWB failed for {c.get('courier_name')} — trying next")
 
     if awb:
         return awb, chosen, False, surface
@@ -197,13 +203,14 @@ def assign_awb(shipment_id, courier_id=None):
     payload = {"shipment_id": shipment_id}
     if courier_id: payload["courier_id"] = courier_id
     r = sr_post("/courier/assign/awb", payload)
+    log.info(f"assign_awb raw response courier_id={courier_id}: {r}")
     if r.get("awb_assign_status") == 1:
         return r["response"]["data"]["awb_code"]
-    # Detect wallet/balance errors
     err = str(r).lower()
     if any(w in err for w in ["wallet", "balance", "recharge", "insufficient", "credit"]):
         return "WALLET_LOW"
     return None
+
 
 def generate_label(shipment_id):
     try:
