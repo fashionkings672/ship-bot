@@ -1200,7 +1200,7 @@ async def do_reassign_courier(update, ctx, chosen_courier):
             log.error(f"Label reassign: {e}")
     ud.clear()
 
-# ─── CALLBACKS ────────────────────────────
+# ─── CALLBACKS ──────────────────────────── 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 global ACTIVE_SR_ACCOUNT, _token
 
@@ -1243,7 +1243,6 @@ if data == "dup_yes":
         f"Enter creative code (or type 'skip'):"
     )
     return
-
     if data == "dup_no":
         await q.message.reply_text("Cancelled", reply_markup=MAIN_KB)
         ud.clear(); return
