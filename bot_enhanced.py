@@ -1,5 +1,5 @@
 """
-bot_enhanced.py — Oneboxx Ship Bot Final
+bot_enhanced.py — Onebox Ship Bot Final
 Features:
 - Auto write to Google Sheet 'Events' tab on every order
 - Auto upload to Meta Offline Events Dataset
