@@ -68,7 +68,16 @@ def run_bot_enhanced():
         import bot_enhanced
         log.info(f"✅ {name} imported successfully")
         bot_status[name] = "running"
-        asyncio.run(bot_enhanced.main())
+
+        # Use a fresh event loop to avoid conflicts with any loop
+        # already running in this process (e.g. from APScheduler).
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(bot_enhanced.main())
+        finally:
+            loop.close()
+
         bot_status[name] = "stopped"
         log.info(f"🛑 {name} stopped")
     except Exception as e:
@@ -84,7 +93,16 @@ def run_bot2():
         import bot2
         log.info(f"✅ {name} imported successfully")
         bot_status[name] = "running"
-        asyncio.run(bot2.main())
+
+        # Use a fresh event loop to avoid conflicts with any loop
+        # already running in this process (e.g. from APScheduler).
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(bot2.main())
+        finally:
+            loop.close()
+
         bot_status[name] = "stopped"
         log.info(f"🛑 {name} stopped")
     except Exception as e:
