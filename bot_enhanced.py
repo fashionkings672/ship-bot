@@ -399,6 +399,7 @@ def parse_fields(text):
 MAIN_KB = ReplyKeyboardMarkup([
     ["➕ Create Shipment", "🔍 Search Order"],
     ["📥 Download Labels", "📦 Products"],
+    ["⚙️ Settings"]
 ], resize_keyboard=True)
 
 def order_action_kb(order_id, phone):
@@ -528,6 +529,18 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if text == "📦 Products":
         ud.clear(); await show_products(update, ctx); return
+     
+if text == "⚙️ Settings":
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("MAIN Account", callback_data="set_main")],
+        [InlineKeyboardButton("BB Account", callback_data="set_bb")]
+    ])
+
+    await update.message.reply_text(
+        f"Current Account: {ACTIVE_SR_ACCOUNT}",
+        reply_markup=kb
+    )
+    return
 
     if state == "create":
         await do_create(update, ctx, text); return
@@ -1194,6 +1207,37 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     data = q.data or ""
     ud = ctx.user_data
+
+global ACTIVE_SR_ACCOUNT, _token
+if data == "set_main":
+    ACTIVE_SR_ACCOUNT = "MAIN"
+    _token = None
+
+    try:
+        refresh_pickups()
+    except Exception as e:
+        await q.message.reply_text(f"❌ Error: {e}")
+        return
+
+    await q.message.reply_text(
+        "✅ Active Shiprocket Account changed to MAIN"
+    )
+    return
+
+if data == "set_bb":
+    ACTIVE_SR_ACCOUNT = "BB"
+    _token = None
+
+    try:
+        refresh_pickups()
+    except Exception as e:
+        await q.message.reply_text(f"❌ Error: {e}")
+        return
+
+    await q.message.reply_text(
+        "✅ Active Shiprocket Account changed to BB"
+    )
+    return
 
     if data == "dup_yes":
         ud["state"] = "create_creative"
