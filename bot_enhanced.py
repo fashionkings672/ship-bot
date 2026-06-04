@@ -1203,15 +1203,16 @@ async def do_reassign_courier(update, ctx, chosen_courier):
 
 # ─── CALLBACKS ────────────────────────────
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    global ACTIVE_SR_ACCOUNT, _token
+
     q = update.callback_query
     await q.answer()
     data = q.data or ""
     ud = ctx.user_data
 
-global ACTIVE_SR_ACCOUNT, _token
-if data == "set_main":
-    ACTIVE_SR_ACCOUNT = "MAIN"
-    _token = None
+    if data == "set_main":
+        ACTIVE_SR_ACCOUNT = "MAIN"
+        _token = None
 
     try:
         refresh_pickups()
