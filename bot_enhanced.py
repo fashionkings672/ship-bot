@@ -1202,47 +1202,47 @@ async def do_reassign_courier(update, ctx, chosen_courier):
 
 # ─── CALLBACKS ──────────────────────────── 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-global ACTIVE_SR_ACCOUNT, _token
+    global ACTIVE_SR_ACCOUNT, _token
 
-q = update.callback_query
-await q.answer()
-data = q.data or ""
-ud = ctx.user_data
-if data == "set_main":
-    ACTIVE_SR_ACCOUNT = "MAIN"
-    _token = None
-    try:
-        refresh_pickups()
-    except Exception as e:
-        await q.message.reply_text(f"❌ Error: {e}")
+    q = update.callback_query
+    await q.answer()
+    data = q.data or ""
+    ud = ctx.user_data
+    if data == "set_main":
+        ACTIVE_SR_ACCOUNT = "MAIN"
+        _token = None
+        try:
+            refresh_pickups()
+        except Exception as e:
+            await q.message.reply_text(f"❌ Error: {e}")
+            return
+        await q.message.reply_text(
+            "✅ Active Shiprocket Account changed to MAIN"
+        )
         return
-    await q.message.reply_text(
-        "✅ Active Shiprocket Account changed to MAIN"
-    )
-    return
-if data == "set_bb":
-    ACTIVE_SR_ACCOUNT = "BB"
-    _token = None
-    try:
-        refresh_pickups()
-    except Exception as e:
-        await q.message.reply_text(f"❌ Error: {e}")
+    if data == "set_bb":
+        ACTIVE_SR_ACCOUNT = "BB"
+        _token = None
+        try:
+            refresh_pickups()
+        except Exception as e:
+            await q.message.reply_text(f"❌ Error: {e}")
+            return
+        await q.message.reply_text(
+            "✅ Active Shiprocket Account changed to BB"
+        )
         return
-    await q.message.reply_text(
-        "✅ Active Shiprocket Account changed to BB"
-    )
-    return
-if data == "dup_yes":
-    ud["state"] = "create_creative"
-    d = ud.get("create_parsed", {})
-    await q.message.reply_text(
-        f"✅ Parsed:\nName: {d.get('name','')}\nPhone: {d.get('phone','')}\n"
-        f"Address: {d.get('address','')}\nLandmark: {d.get('address2','NA')}\n"
-        f"City: {d.get('city','')}, {d.get('pincode','')}\nState: {d.get('state','')}\n"
-        f"Product: {d.get('product','')}\nCOD: ₹{int(float(d.get('cod',0))):,}\n\n"
-        f"Enter creative code (or type 'skip'):"
-    )
-    return
+    if data == "dup_yes":
+        ud["state"] = "create_creative"
+        d = ud.get("create_parsed", {})
+        await q.message.reply_text(
+            f"✅ Parsed:\nName: {d.get('name','')}\nPhone: {d.get('phone','')}\n"
+            f"Address: {d.get('address','')}\nLandmark: {d.get('address2','NA')}\n"
+            f"City: {d.get('city','')}, {d.get('pincode','')}\nState: {d.get('state','')}\n"
+            f"Product: {d.get('product','')}\nCOD: ₹{int(float(d.get('cod',0))):,}\n\n"
+            f"Enter creative code (or type 'skip'):"
+        )
+        return
     if data == "dup_no":
         await q.message.reply_text("Cancelled", reply_markup=MAIN_KB)
         ud.clear(); return
