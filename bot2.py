@@ -969,12 +969,17 @@ async def main():
     log.info("BB Shiprocket OK")
     refresh_pickups()
     log.info("BB bot ready")
-
+ 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("start",  cmd_start))
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
+ 
     log.info("BB bot running...")
     await app.run_polling()
+ 
+ 
+if __name__ == "__main__":
+    asyncio.run(main())
+ 
