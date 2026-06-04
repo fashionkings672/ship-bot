@@ -29,18 +29,32 @@ from orders_manager import (
 )
 
 # ─── CONFIG ───────────────────────────────
-BOT_TOKEN        = os.getenv("BOT_TOKEN_2")
-SHIPROCKET_EMAIL = os.getenv("SHIPROCKET_EMAIL")
-SHIPROCKET_PASS  = os.getenv("SHIPROCKET_PASSWORD")
-OPENAI_API_KEY   = os.getenv("OPENAI_API_KEY")
+BOT_TOKEN = os.getenv("BOT_TOKEN_2")
+
+SHIPROCKET_EMAIL_MAIN = os.getenv("SHIPROCKET_EMAIL")
+SHIPROCKET_PASS_MAIN  = os.getenv("SHIPROCKET_PASSWORD")
+
+SHIPROCKET_EMAIL_BB = os.getenv("SR_EMAIL_BB")
+SHIPROCKET_PASS_BB  = os.getenv("SR_PASS_BB")
+
+ACTIVE_SR_ACCOUNT = os.getenv("ACTIVE_SR_ACCOUNT", "MAIN")
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 for k,v in [("BOT_TOKEN_2",BOT_TOKEN),("SHIPROCKET",SHIPROCKET_EMAIL),("OPENAI",OPENAI_API_KEY)]:
     print(f"  {k}: {'OK' if v else 'MISSING'}")
 
-if not BOT_TOKEN:        raise ValueError("BOT_TOKEN_2 not set")
-if not SHIPROCKET_EMAIL: raise ValueError("SHIPROCKET_EMAIL not set")
-if not SHIPROCKET_PASS:  raise ValueError("SHIPROCKET_PASSWORD not set")
-if not OPENAI_API_KEY:   raise ValueError("OPENAI_API_KEY not set")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN_2 not set")
+
+if not SHIPROCKET_EMAIL_MAIN:
+    raise ValueError("SHIPROCKET_EMAIL not set")
+
+if not SHIPROCKET_PASS_MAIN:
+    raise ValueError("SHIPROCKET_PASSWORD not set")
+
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY not set")
 
 openai.api_key = OPENAI_API_KEY
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -60,16 +74,38 @@ COURIER_PRIORITY_FILE = "courier_priority.json"
 
 def get_token(force=False):
     global _token, _token_exp
+
     if not force and _token and time.time() < _token_exp:
         return _token
-    r = session.post(f"{SR_BASE}/auth/login",
-                     json={"email": SHIPROCKET_EMAIL, "password": SHIPROCKET_PASS}, timeout=60)
+
+    if ACTIVE_SR_ACCOUNT == "BB":
+        email = SHIPROCKET_EMAIL_BB
+        password = SHIPROCKET_PASS_BB
+    else:
+        email = SHIPROCKET_EMAIL_MAIN
+        password = SHIPROCKET_PASS_MAIN
+
+    r = session.post(
+        f"{SR_BASE}/auth/login",
+        json={
+            "email": email,
+            "password": password
+        },
+        timeout=60
+    )
+
     data = r.json()
+
     if "token" not in data:
         raise Exception(f"SR login failed: {data}")
+
     _token = data["token"]
-    _token_exp = time.time() + 23*3600
-    session.headers.update({"Authorization": f"Bearer {_token}"})
+    _token_exp = time.time() + 23 * 3600
+
+    session.headers.update({
+        "Authorization": f"Bearer {_token}"
+    })
+
     return _token
 
 def ensure_token():
