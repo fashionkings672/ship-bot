@@ -1,5 +1,5 @@
 """
-bot_enhanced.py — Onebox Ship Bot Final
+bot_enhanced.py — Oneboxx Ship Bot Final
 Features:
 - Auto write to Google Sheet 'Events' tab on every order
 - Auto upload to Meta Offline Events Dataset
@@ -131,112 +131,79 @@ def get_couriers(pp, dp, weight, cod):
 def is_surface(c):
     mode = str(c.get("mode", "")).lower()
     name = str(c.get("courier_name", "")).lower()
-    # Ban ANYTHING with "air" in mode or name — no exceptions
+    # Ban Air by mode
     if "air" in mode:
         return False
-    if "air" in name:
+    # Ban Air by name (e.g. "Blue Dart Air") unless name also has "surface"
+    if "air" in name and "surface" not in name:
         return False
     return "surface" in mode or "surface" in name
 
 def courier_auto_rank(c):
     """
-    Uses courier_priority.json first.
-    Hardcoded fallback uses HIGH numbers so priority file always wins.
+    0 = Bluedart   (1st choice)
+    1 = Delhivery  (2nd)
+    2 = Ekart      (3rd)
+    3 = DTDC       (4th)
+    99 = everything else → ask user
     """
-    name = str(c.get("courier_name", ""))
-    n = name.lower()
-    # Always ban air
-    if "air" in n:
-        return 9999
-    # Priority file first
-    pr = priority_rank(name)
-    if pr != 999:
-        return pr
-    # Hardcoded fallback — high numbers so they NEVER beat priority file
-    if "bluedart" in n or "blue dart" in n:
-        return 10
-    if "delhivery" in n:
-        return 20
-    if "ekart" in n or "e-kart" in n:
-        return 30
-    if "dtdc" in n:
-        return 40
+    name = str(c.get("courier_name", "")).lower()
+    if "bluedart" in name or "blue dart" in name:
+        return 0
+    if "delhivery" in name:
+        return 1
+    if "ekart" in name or "e-kart" in name:
+        return 2
+    if "dtdc" in name:
+        return 3
     return 99
 
-
 def select_courier(couriers, shipment_id):
-    # Step 1: surface only, air already banned in is_surface + courier_auto_rank
     surface = [c for c in couriers if is_surface(c)]
-    log.info(f"Surface couriers ({len(surface)}): {[c.get('courier_name') for c in surface]}")
     if not surface:
-        log.warning("No surface couriers — using all as fallback")
         surface = couriers
 
-    # Step 2: rank ALL surface couriers
-    ranked = sorted(surface, key=courier_auto_rank)
-    log.info(f"Ranked order: {[(c.get('courier_name'), courier_auto_rank(c)) for c in ranked]}")
+    auto = [c for c in surface if courier_auto_rank(c) < 99]
+    auto_sorted = sorted(auto, key=courier_auto_rank)
 
-    # Step 3: try in order, skip rank>=99 (those go to manual)
     awb = None
     chosen = None
-    for c in ranked:
-        rank = courier_auto_rank(c)
-        if rank >= 99:
-            log.info(f"Skipping {c.get('courier_name')} rank={rank} — manual zone")
-            continue
+    for c in auto_sorted:
         cid = c.get("courier_company_id") or c.get("courier_id")
-        log.info(f"Trying: {c.get('courier_name')} rank={rank} id={cid}")
         result = assign_awb(shipment_id, cid)
         if result == "WALLET_LOW":
-            log.warning("Wallet low")
             return "WALLET_LOW", None, False, surface
         if result:
-            log.info(f"✅ AWB success: {result} via {c.get('courier_name')}")
             awb = result
             chosen = c
             break
-        else:
-            log.warning(f"❌ AWB failed for {c.get('courier_name')} — next")
 
     if awb:
         return awb, chosen, False, surface
     else:
-        log.warning("All auto couriers failed — manual pick")
-        return None, None, True, [c for c in surface if courier_auto_rank(c) < 9999]
-
+        return None, None, True, surface
 
 # ─── END COURIER HELPERS ──────────────────────────────────────────────────────
 
 def priority_rank(name):
     if not os.path.exists(COURIER_PRIORITY_FILE): return 999
     prio = json.load(open(COURIER_PRIORITY_FILE))
-    n = name.lower().strip()
-    # Exact match first
-    for k, v in prio.items():
-        if k.lower().strip() == n:
-            log.info(f"priority_rank EXACT: '{name}' → {v}")
-            return v
-    # Partial match — key inside courier name
-    for k, v in prio.items():
-        if k.lower().strip() in n:
-            log.info(f"priority_rank PARTIAL: '{name}' matched '{k}' → {v}")
-            return v
-    log.info(f"priority_rank NO MATCH: '{name}' → 999")
+    n = name.lower()
+    for k,v in prio.items():
+        if k.lower() in n or n in k.lower(): return v
     return 999
-
 
 def assign_awb(shipment_id, courier_id=None):
     payload = {"shipment_id": shipment_id}
     if courier_id: payload["courier_id"] = courier_id
     r = sr_post("/courier/assign/awb", payload)
-    log.info(f"assign_awb raw response courier_id={courier_id}: {r}")
     if r.get("awb_assign_status") == 1:
         return r["response"]["data"]["awb_code"]
+    # Detect wallet/balance errors
     err = str(r).lower()
     if any(w in err for w in ["wallet", "balance", "recharge", "insufficient", "credit"]):
         return "WALLET_LOW"
     return None
-
 
 def generate_label(shipment_id):
     try:
@@ -1319,7 +1286,13 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         products = json.load(open(PRODUCTS_FILE)) if os.path.exists(PRODUCTS_FILE) else {}
         products.pop(name,None)
         json.dump(products, open(PRODUCTS_FILE,"w"), indent=2)
-        await q.edit_message_async def main():
+        await q.edit_message_text(f"🗑 Deleted: {name}"); return
+    if data.startswith("prod_edit_"):
+        ud["state"] = "prod_add"
+        await q.message.reply_text("New details:\nName l b h w"); return
+
+# ─── MAIN ─────────────────────────────────
+async def main():
     log.info("Starting bot...")
     get_token()
     log.info("Shiprocket OK")
@@ -1336,42 +1309,24 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     app.add_handler(CommandHandler("report",      cmd_report))
     app.add_handler(CommandHandler("setcreative", cmd_setcreative))
     app.add_handler(CommandHandler("uploadfb",    cmd_uploadfb))
+
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    # ── Scheduler starts INSIDE PTB's event loop via post_init ──
-    scheduler = AsyncIOScheduler(timezone=pytz.timezone("Asia/Kolkata"))
 
     async def scheduled_upload():
         log.info("Scheduled Meta upload starting...")
         result = run_upload()
         log.info(f"Scheduled upload done: {result[:200]}")
 
+    scheduler = AsyncIOScheduler(timezone=pytz.timezone("Asia/Kolkata"))
     scheduler.add_job(scheduled_upload, "cron", hour=23, minute=0)
-
-    async def on_startup(application):
-        scheduler.start()
-        log.info("Scheduler started — Meta upload daily at 11:00 PM IST")
-
-    async def on_shutdown(application):
-        if scheduler.running:
-            scheduler.shutdown(wait=False)
-        log.info("Scheduler stopped")
-
-    app.post_init     = on_startup
-    app.post_shutdown = on_shutdown
-    # ────────────────────────────────────────────────────────────
+    scheduler.start()
+    log.info("Scheduler started — Meta upload daily at 11:00 PM IST")
 
     log.info("Bot running...")
     await app.run_polling()
 
-
 if __name__ == "__main__":
+    import nest_asyncio
+    nest_asyncio.apply()
     asyncio.run(main())
-text(f"🗑 Deleted: {name}"); return
-    if data.startswith("prod_edit_"):
-        ud["state"] = "prod_add"
-        await q.message.reply_text("New details:\nName l b h w"); return
-
-# ─── MAIN ─────────────────────────────────
-
