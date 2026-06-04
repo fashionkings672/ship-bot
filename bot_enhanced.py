@@ -530,18 +530,17 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if text == "📦 Products":
         ud.clear(); await show_products(update, ctx); return
      
-if text == "⚙️ Settings":
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("MAIN Account", callback_data="set_main")],
-        [InlineKeyboardButton("BB Account", callback_data="set_bb")]
-    ])
+    if text == "⚙️ Settings":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("MAIN Account", callback_data="set_main")],
+            [InlineKeyboardButton("BB Account", callback_data="set_bb")]
+        ])
 
-    await update.message.reply_text(
-        f"Current Account: {ACTIVE_SR_ACCOUNT}",
-        reply_markup=kb
-    )
-    return
-
+        await update.message.reply_text(
+            f"Current Account: {ACTIVE_SR_ACCOUNT}",
+            reply_markup=kb
+        )
+        return
     if state == "create":
         await do_create(update, ctx, text); return
 
