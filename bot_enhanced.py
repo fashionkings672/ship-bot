@@ -891,26 +891,27 @@ async def do_create_shipment(update_or_q, ctx):
             await msg.edit_text("❌ Pickup not found.")
             ctx.user_data.clear()
             return
-pickup_display = pickup_obj.get("pickup_location", "")
-pickup_pin     = str(pickup_obj.get("pin_code", "560001"))
-delivery_pin   = str(d.get("pincode", "560001"))
-order_id       = f"OBX{int(time.time())}_{uuid.uuid4().hex[:5]}"
-weight         = float(prod["weight"])
+        pickup_display = pickup_obj.get("pickup_location", "")
+        pickup_pin     = str(pickup_obj.get("pin_code", "560001"))
+        delivery_pin   = str(d.get("pincode", "560001"))
+        order_id       = f"OBX{int(time.time())}_{uuid.uuid4().hex[:5]}"
+        weight         = float(prod["weight"])
 
-log.info(
-    f"Account={get_active_account()} | "
-    f"Pickup={pickup_display} | "
-    f"PickupPin={pickup_pin} | "
-    f"Weight={weight}kg | "
-    f"Product={prod_name}"
-)
+        log.info(
+            f"Account={get_active_account()} | "
+            f"Pickup={pickup_display} | "
+            f"PickupPin={pickup_pin} | "
+            f"Weight={weight}kg | "
+            f"Product={prod_name}"
+        )
 
-log.info(
-    f"Available pickups: {_pickups.get(get_active_account(), {})}"
-)
+        log.info(
+            f"Available pickups: {_pickups.get(get_active_account(), {})}"
+        )
 
-is_prepaid = d.get("payment_mode", "").strip().upper() == "PREPAID"
-sr_payment = "Prepaid" if is_prepaid else "COD"
+        is_prepaid = d.get("payment_mode", "").strip().upper() == "PREPAID"
+        sr_payment = "Prepaid" if is_prepaid else "COD"
+
         payload = {
             "order_id":              order_id,
             "order_date":            datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
