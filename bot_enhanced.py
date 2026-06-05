@@ -1004,14 +1004,14 @@ async def do_create_shipment(update_or_q, ctx):
         ctx.user_data.clear()
 
 # ─── FINISH SHIPMENT ──────────────────────
-async def _finish_shipment_after_awb(reply, ctx, awb, chosen,
-    order_id=None, resp=None, d=None,
-    prod_name=None, cod_amount=None,
-    pickup_display=None, delivery_pin=None,
-    weight=None, shipment_id=None, creative=None,
-    sr_payment=None):
-
+async def finish_shipment_after_awb(reply, ctx, awb, chosen,
+                                   order_id=None, resp=None, d=None,
+                                   prod_name=None, cod_amount=None,
+                                   pickup_display=None, delivery_pin=None,
+                                   weight=None, shipment_id=None, creative=None,
+                                   sr_payment=None):
     ud = ctx.user_data
+
     if order_id is None:
         order_id       = ud.get("pending_order_id")
         resp           = ud.get("pending_sr_resp", {})
@@ -1032,50 +1032,40 @@ async def _finish_shipment_after_awb(reply, ctx, awb, chosen,
     order_num = next_order_number()
 
     order_record = {
-    "shiprocket_account": get_active_account(),  # NEW
+        "shiprocket_account": get_active_account(),
+        "order_id":            order_id,
+        "order_number":        order_num,
+        "created_at":          datetime.now().isoformat(),
+        "phone":               d.get("phone", ""),
+        "customer_name":       d.get("name", ""),
+        "address":             d.get("address", ""),
+        "address2":            d.get("address2", ""),
+        "city":                d.get("city", ""),
+        "state":               d.get("state", "Karnataka"),
+        "pincode":             delivery_pin,
+        "product":             prod_name,
+        "creative":            creative,
+        "total":               cod_amount,
+        "cod_amount":          cod_amount,
+        "payment_method":      sr_payment,
+        "courier_paid":        COURIER_CHARGES,
+        "advance_paid":        None,
+        "status":              "active",
+        "pickup_location":     pickup_display,
+        "shiprocket": {
+            "order_id":    resp.get("order_id", ""),
+            "shipment_id": shipment_id,
+            "awb":         awb,
+            "courier":     chosen.get("courier_name", ""),
+            "rate":        chosen.get("rate", 0),
+            "tracking":    tracking,
+        },
+        "manual":               None,
+        "label_downloaded":     False,
+        "label_downloaded_date": "",
+    }
 
-    "order_id":            order_id,
-    "order_number":        order_num,
-    "created_at":          datetime.now().isoformat(),
-
-    "phone":               d.get("phone", ""),
-    "customer_name":       d.get("name", ""),
-    "address":             d.get("address", ""),
-    "address2":            d.get("address2", ""),
-    "city":                d.get("city", ""),
-    "state":               d.get("state", "Karnataka"),
-    "pincode":             delivery_pin,
-
-    "product":             prod_name,
-    "creative":            creative,
-
-    "total":               cod_amount,
-    "cod_amount":          cod_amount,
-    "payment_method":      sr_payment,
-
-    "courier_paid":        COURIER_CHARGES,
-    "advance_paid":        None,
-
-    "status":              "active",
-
-    "pickup_location":     pickup_display,
-
-    "shiprocket": {
-        "order_id":    resp.get("order_id", ""),
-        "shipment_id": shipment_id,
-        "awb":         awb,
-        "courier":     chosen.get("courier_name", ""),
-        "rate":        chosen.get("rate", 0),
-        "tracking":    tracking,
-    },
-
-    "manual":               None,
-    "label_downloaded":     False,
-    "label_downloaded_date": "",
-}
-log.info(
-    f"Saved Order -> Account={get_active_account()} | Pickup={pickup_display} | AWB={awb}"
-)
+    log.info(f"Saved Order -> Account={get_active_account()} | Pickup={pickup_display} | AWB={awb}")
     save_order(order_record)
 
     meta_status = "⚠️ Meta skipped"
@@ -1120,17 +1110,6 @@ log.info(
         InlineKeyboardButton("❌ Cancel",           callback_data=f"action_cancel_{order_id}"),
     ]])
     await reply.reply_text("Shipment action:", reply_markup=kb)
-    ctx.user_data.clear()
-
-# ─── SEARCH ───────────────────────────────
-async def do_search(update, ctx, text):
-    o = find_by_phone(text) if re.match(r"^\d{10}$", text.strip()) else find_by_awb(text)
-    if o:
-        await update.message.reply_text(
-            format_order(o),
-            reply_markup=order_action_kb(o.get("order_id", ""), o.get("phone", "")))
-    else:
-        await update.message.reply_text("❌ No order found", reply_markup=MAIN_KB)
     ctx.user_data.clear()
 
 # ─── ADVANCE ──────────────────────────────
