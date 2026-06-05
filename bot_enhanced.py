@@ -1202,168 +1202,191 @@ async def do_reassign_courier(update, ctx, chosen_courier):
 
 # ─── CALLBACKS ──────────────────────────── 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-global ACTIVE_SR_ACCOUNT, _token
+    global ACTIVE_SR_ACCOUNT, _token
 
-q = update.callback_query
-await q.answer()
-data = q.data or ""
-ud = ctx.user_data
-if data == "set_main":
-    ACTIVE_SR_ACCOUNT = "MAIN"
-    _token = None
-    try:
-        refresh_pickups()
-    except Exception as e:
-        await q.message.reply_text(f"❌ Error: {e}")
+    q = update.callback_query
+    await q.answer()
+    data = q.data or ""
+    ud = ctx.user_data
+
+    if data == "set_main":
+        ACTIVE_SR_ACCOUNT = "MAIN"
+        _token = None
+        try:
+            refresh_pickups()
+        except Exception as e:
+            await q.message.reply_text(f"❌ Error: {e}")
+            return
+        await q.message.reply_text("✅ Active Shiprocket Account changed to MAIN")
         return
-    await q.message.reply_text(
-        "✅ Active Shiprocket Account changed to MAIN"
-    )
-    return
-if data == "set_bb":
-    ACTIVE_SR_ACCOUNT = "BB"
-    _token = None
-    try:
-        refresh_pickups()
-    except Exception as e:
-        await q.message.reply_text(f"❌ Error: {e}")
+
+    if data == "set_bb":
+        ACTIVE_SR_ACCOUNT = "BB"
+        _token = None
+        try:
+            refresh_pickups()
+        except Exception as e:
+            await q.message.reply_text(f"❌ Error: {e}")
+            return
+        await q.message.reply_text("✅ Active Shiprocket Account changed to BB")
         return
-    await q.message.reply_text(
-        "✅ Active Shiprocket Account changed to BB"
-    )
-    return
-if data == "dup_yes":
-    ud["state"] = "create_creative"
-    d = ud.get("create_parsed", {})
-    await q.message.reply_text(
-        f"✅ Parsed:\nName: {d.get('name','')}\nPhone: {d.get('phone','')}\n"
-        f"Address: {d.get('address','')}\nLandmark: {d.get('address2','NA')}\n"
-        f"City: {d.get('city','')}, {d.get('pincode','')}\nState: {d.get('state','')}\n"
-        f"Product: {d.get('product','')}\nCOD: ₹{int(float(d.get('cod',0))):,}\n\n"
-        f"Enter creative code (or type 'skip'):"
-    )
-    return
+
+    if data == "dup_yes":
+        ud["state"] = "create_creative"
+        d = ud.get("create_parsed", {})
+        await q.message.reply_text(
+            f"✅ Parsed:\nName: {d.get('name','')}\nPhone: {d.get('phone','')}\n"
+            f"Address: {d.get('address','')}\nLandmark: {d.get('address2','NA')}\n"
+            f"City: {d.get('city','')}, {d.get('pincode','')}\nState: {d.get('state','')}\n"
+            f"Product: {d.get('product','')}\nCOD: ₹{int(float(d.get('cod',0))):,}\n\n"
+            f"Enter creative code (or type 'skip'):"
+        )
+        return
+
     if data == "dup_no":
         await q.message.reply_text("Cancelled", reply_markup=MAIN_KB)
-        ud.clear(); return
+        ud.clear()
+        return
 
     if data.startswith("adv_start_"):
-        await show_advance(q, ctx, data.replace("adv_start_","")); return
+        await show_advance(q, ctx, data.replace("adv_start_", ""))
+        return
 
-    if data.startswith("adv_") and data not in ("adv_save","adv_rebook","adv_custom"):
-        await do_save_advance(q, ctx, int(data.replace("adv",""))); return
+    if data.startswith("adv_") and data not in ("adv_save", "adv_rebook", "adv_custom"):
+        await do_save_advance(q, ctx, int(data.replace("adv_", "")))
+        return
 
     if data == "adv_custom":
         ud["state"] = "adv_custom"
-        await q.message.reply_text("Enter advance amount:"); return
+        await q.message.reply_text("Enter advance amount:")
+        return
 
     if data == "adv_save":
         await q.message.reply_text("✅ Done!", reply_markup=MAIN_KB)
-        ud.clear(); return
+        ud.clear()
+        return
 
     if data == "adv_rebook":
         ud["state"] = "adv_new_cod"
-        await q.message.reply_text("Enter new COD amount:"); return
+        await q.message.reply_text("Enter new COD amount:")
+        return
 
     if data.startswith("pickup_yes_"):
-        parts = data.replace("pickup_yes_","").split("_",1)
+        parts = data.replace("pickup_yes_", "").split("_", 1)
         ok, msg = schedule_pickup([parts[0]])
-        if ok and len(parts)>1:
+        if ok and len(parts) > 1:
             update_order_by_id(parts[1], pickup_scheduled=True)
-        await q.edit_message_text(msg); return
+        await q.edit_message_text(msg)
+        return
 
     if data.startswith("action_cancel_"):
-        order_id = data.replace("action_cancel_","")
+        order_id = data.replace("action_cancel_", "")
         orders = load_orders()
-        o = next((x for x in orders if x.get("order_id")==order_id), None)
+        o = next((x for x in orders if x.get("order_id") == order_id), None)
         if o:
             sr_order_id = get_real_sr_order_id(o)
             if sr_order_id:
                 ok, msg = cancel_sr_order(sr_order_id)
-                if ok: update_order_by_id(order_id, status="cancelled")
+                if ok:
+                    update_order_by_id(order_id, status="cancelled")
                 await q.message.reply_text(
-                    f"{'✅ Cancelled' if ok else '❌ '+msg} #{o.get('order_number')}",
+                    f"{'✅ Cancelled' if ok else '❌ ' + msg} #{o.get('order_number')}",
                     reply_markup=MAIN_KB)
             else:
                 await q.message.reply_text("❌ No Shiprocket order ID", reply_markup=MAIN_KB)
         return
 
     if data.startswith("action_reassign_"):
-        order_id = data.replace("action_reassign_","")
+        order_id = data.replace("action_reassign_", "")
         orders = load_orders()
-        o = next((x for x in orders if x.get("order_id")==order_id), None)
+        o = next((x for x in orders if x.get("order_id") == order_id), None)
         if not o:
-            await q.message.reply_text("❌ Order not found"); return
+            await q.message.reply_text("❌ Order not found")
+            return
         await q.message.reply_text("⏳ Fetching couriers...")
         couriers = get_available_couriers_for_order(o)
         if not couriers:
-            await q.message.reply_text("❌ No couriers available"); return
+            await q.message.reply_text("❌ No couriers available")
+            return
         surface = [c for c in couriers if is_surface(c)] or couriers
         sorted_c = sorted(surface, key=courier_auto_rank)[:10]
         ud.update({"reassign_order_id": order_id, "reassign_order": o,
-                    "reassign_couriers": sorted_c, "state": "reassign_select"})
+                   "reassign_couriers": sorted_c, "state": "reassign_select"})
         lines = ["🔄 *Available Couriers (Surface):*\n"]
-        for i,c in enumerate(sorted_c,1):
+        for i, c in enumerate(sorted_c, 1):
             tag = "⭐ Priority" if courier_auto_rank(c) < 2 else "Standard"
-            lines.append(f"{i}. {c.get('courier_name','')} — ₹{c.get('rate',0)} ({tag})")
+            lines.append(f"{i}. {c.get('courier_name', '')} — ₹{c.get('rate', 0)} ({tag})")
         await q.message.reply_text("\n".join(lines), parse_mode="Markdown")
         return
 
     if data.startswith("manual_start_"):
-        phone = data.replace("manual_start_","")
+        phone = data.replace("manual_start_", "")
         o = find_by_phone(phone)
         if o:
-            ud.update({"manual_phone":phone,"manual_order":o})
+            ud.update({"manual_phone": phone, "manual_order": o})
             sr = o.get("shiprocket") or {}
             if sr.get("awb"):
                 kb = InlineKeyboardMarkup([[
                     InlineKeyboardButton("✅ Yes cancel + manual", callback_data="manual_cancel_yes"),
                     InlineKeyboardButton("❌ No", callback_data="manual_cancel_no"),
                 ]])
-                await q.message.reply_text(f"AWB: {sr.get('awb')} — cancel + add manual?", reply_markup=kb)
+                await q.message.reply_text(
+                    f"AWB: {sr.get('awb')} — cancel + add manual?", reply_markup=kb)
             else:
                 ud["state"] = "manual_vendor"
                 await q.message.reply_text("Enter vendor name:")
         return
 
     if data == "manual_cancel_yes":
-        o = ud.get("manual_order",{})
+        o = ud.get("manual_order", {})
         sr_order_id = get_real_sr_order_id(o)
-        if sr_order_id: cancel_sr_order(sr_order_id)
+        if sr_order_id:
+            cancel_sr_order(sr_order_id)
         ud["state"] = "manual_vendor"
-        await q.message.reply_text("✅ Cancelled\n\nEnter vendor name:"); return
+        await q.message.reply_text("✅ Cancelled\n\nEnter vendor name:")
+        return
 
     if data == "manual_cancel_no":
         await q.message.reply_text("Cancelled", reply_markup=MAIN_KB)
-        ud.clear(); return
+        ud.clear()
+        return
 
     if data.startswith("lv1_"):
-        await show_label_products(q, data.replace("lv1_","")); return
+        await show_label_products(q, data.replace("lv1_", ""))
+        return
+
     if data.startswith("lv2_"):
-        parts = data.replace("lv2_","").split("|",1)
-        await show_label_filter(q, parts[0], parts[1] if len(parts)>1 else ""); return
+        parts = data.replace("lv2_", "").split("|", 1)
+        await show_label_filter(q, parts[0], parts[1] if len(parts) > 1 else "")
+        return
+
     if data.startswith("lv3_"):
-        parts = data.replace("lv3_","").split("|")
-        vendor = parts[0]; product = parts[1] if len(parts)>1 else ""
-        mode = parts[2] if len(parts)>2 else "all"
+        parts = data.replace("lv3_", "").split("|")
+        vendor = parts[0]
+        product = parts[1] if len(parts) > 1 else ""
+        mode = parts[2] if len(parts) > 2 else "all"
         await do_download_labels(
             update,
-            get_label_queue_by_vendor_product(vendor, product, advance_only=(mode=="adv")))
+            get_label_queue_by_vendor_product(vendor, product, advance_only=(mode == "adv")))
         return
 
     if data == "prod_add":
         ud["state"] = "prod_add"
-        await q.message.reply_text("Send: Name length breadth height weight"); return
+        await q.message.reply_text("Send: Name length breadth height weight")
+        return
+
     if data.startswith("prod_del_"):
-        name = data.replace("prod_del_","")
+        name = data.replace("prod_del_", "")
         products = json.load(open(PRODUCTS_FILE)) if os.path.exists(PRODUCTS_FILE) else {}
-        products.pop(name,None)
-        json.dump(products, open(PRODUCTS_FILE,"w"), indent=2)
-        await q.edit_message_text(f"🗑 Deleted: {name}"); return
+        products.pop(name, None)
+        json.dump(products, open(PRODUCTS_FILE, "w"), indent=2)
+        await q.edit_message_text(f"🗑 Deleted: {name}")
+        return
+
     if data.startswith("prod_edit_"):
         ud["state"] = "prod_add"
-        await q.message.reply_text("New details:\nName l b h w"); return
-
+        await q.message.reply_text("New details:\nName l b h w")
+        return
 # ─── MAIN ─────────────────────────────────
 async def main():
     log.info("Starting bot...")
