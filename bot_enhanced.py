@@ -84,7 +84,10 @@ SR_BASE    = "https://apiv2.shiprocket.in/v1/external"
 session    = requests.Session()
 _token     = None
 _token_exp = 0
-_pickups   = {}
+_pickups = {
+    "MAIN": {},
+    "BB": {}
+}
 PRODUCTS_FILE         = "products.json"
 COURIER_PRIORITY_FILE = "courier_priority.json"
 
@@ -130,20 +133,49 @@ def ensure_token():
 
 def refresh_pickups():
     global _pickups
+
+    active = get_active_account()
+
     ensure_token()
-    r = session.get(f"{SR_BASE}/settings/company/pickup", timeout=60)
+
+    r = session.get(
+        f"{SR_BASE}/settings/company/pickup",
+        timeout=60
+    )
+
     lst = r.json().get("data", {}).get("shipping_address", [])
-    _pickups = {p["pickup_location"].lower(): p for p in lst if p.get("pickup_location")}
-    log.info(f"Pickups: {list(_pickups.keys())}")
+
+    _pickups[active] = {
+        p["pickup_location"].lower(): p
+        for p in lst
+        if p.get("pickup_location")
+    }
+
+    log.info(
+        f"{active} pickups: {list(_pickups[active].keys())}"
+    )
 
 def resolve_pickup(name):
+    active = get_active_account()
+
+    account_pickups = _pickups.get(active, {})
+
+    if not account_pickups:
+        refresh_pickups()
+        account_pickups = _pickups.get(active, {})
+
     if not name:
-        return next(iter(_pickups.values()), None)
+        return next(iter(account_pickups.values()), None)
+
     key = re.sub(r"\W", "", str(name).lower())
-    for k, v in _pickups.items():
-        if key in re.sub(r"\W", "", k) or re.sub(r"\W", "", k) in key:
+
+    for k, v in account_pickups.items():
+        k2 = re.sub(r"\W", "", k)
+
+        if key in k2 or k2 in key:
             return v
-    return next(iter(_pickups.values()), None)
+
+    return next(iter(account_pickups.values()), None)
 
 def sr_post(ep, payload):
     ensure_token()
@@ -930,38 +962,50 @@ async def _finish_shipment_after_awb(reply, ctx, awb, chosen,
     order_num = next_order_number()
 
     order_record = {
-        "order_id":            order_id,
-        "order_number":        order_num,
-        "created_at":          datetime.now().isoformat(),
-        "phone":               d.get("phone", ""),
-        "customer_name":       d.get("name", ""),
-        "address":             d.get("address", ""),
-        "address2":            d.get("address2", ""),
-        "city":                d.get("city", ""),
-        "state":               d.get("state", "Karnataka"),
-        "pincode":             delivery_pin,
-        "product":             prod_name,
-        "creative":            creative,
-        "total":               cod_amount,
-        "cod_amount":          cod_amount,
-        "payment_method":      sr_payment,
-        "courier_paid":        COURIER_CHARGES,
-        "advance_paid":        None,
-        "status":              "active",
-        "pickup_location":     pickup_display,
-        "shiprocket": {
-            "order_id":    resp.get("order_id", ""),
-            "shipment_id": shipment_id,
-            "awb":         awb,
-            "courier":     chosen.get("courier_name", ""),
-            "rate":        chosen.get("rate", 0),
-            "tracking":    tracking,
-        },
-        "manual":               None,
-        "label_downloaded":     False,
-        "label_downloaded_date": "",
-    }
+    "shiprocket_account": get_active_account(),  # NEW
 
+    "order_id":            order_id,
+    "order_number":        order_num,
+    "created_at":          datetime.now().isoformat(),
+
+    "phone":               d.get("phone", ""),
+    "customer_name":       d.get("name", ""),
+    "address":             d.get("address", ""),
+    "address2":            d.get("address2", ""),
+    "city":                d.get("city", ""),
+    "state":               d.get("state", "Karnataka"),
+    "pincode":             delivery_pin,
+
+    "product":             prod_name,
+    "creative":            creative,
+
+    "total":               cod_amount,
+    "cod_amount":          cod_amount,
+    "payment_method":      sr_payment,
+
+    "courier_paid":        COURIER_CHARGES,
+    "advance_paid":        None,
+
+    "status":              "active",
+
+    "pickup_location":     pickup_display,
+
+    "shiprocket": {
+        "order_id":    resp.get("order_id", ""),
+        "shipment_id": shipment_id,
+        "awb":         awb,
+        "courier":     chosen.get("courier_name", ""),
+        "rate":        chosen.get("rate", 0),
+        "tracking":    tracking,
+    },
+
+    "manual":               None,
+    "label_downloaded":     False,
+    "label_downloaded_date": "",
+}
+log.info(
+    f"Saved Order -> Account={get_active_account()} | Pickup={pickup_display} | AWB={awb}"
+)
     save_order(order_record)
 
     meta_status = "⚠️ Meta skipped"
