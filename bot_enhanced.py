@@ -414,8 +414,19 @@ def order_action_kb(order_id, phone):
 # ─── /start ───────────────────────────────
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
+    # FIX: auto-refresh pickup locations from Shiprocket on every /start,
+    # so a newly added pickup shows up without editing code / restarting Railway.
+    try:
+        await asyncio.to_thread(refresh_pickups)
+        pickup_count = len(_pickups)
+        pickup_note = f"🔄 Pickups synced ({pickup_count} locations)\n\n"
+    except Exception as e:
+        log.error(f"Pickup refresh on /start failed: {e}")
+        pickup_note = "⚠️ Pickup sync failed — using last known list\n\n"
+
     await update.message.reply_text(
-        "🚀 *Oneboxx Ship Bot*\n\n"
+        f"🚀 *Oneboxx Ship Bot*\n\n"
+        f"{pickup_note}"
         "/adsspend /orders /report /setcreative /uploadfb",
         parse_mode="Markdown", reply_markup=MAIN_KB)
 
