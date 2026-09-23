@@ -1,5 +1,5 @@
 """
-bot_enhanced.py — Oneboxx Ship Bot Finals
+bot_enhanced.py — Oneboxx Ship Bot Final
 Features:
 - Auto write to Google Sheet 'Events' tab on every order
 - Auto upload to Meta Offline Events Dataset
@@ -8,6 +8,11 @@ Features:
 
 FIX: sr_payment NameError — variable now passed through _finish_shipment_after_awb
      and derived from d when restoring pending context.
+
+FIX 2: Telegram "Can't parse entities" crash — courier names pulled from
+     Shiprocket (e.g. "India Post-Business Parcel_2.0") contain unescaped
+     Markdown special characters. All courier_name values now passed through
+     escape_markdown() before being placed into any parse_mode="Markdown" message.
 """
 import os, re, json, uuid, time, logging, asyncio, aiohttp, io
 import requests
@@ -15,6 +20,7 @@ import pytz
 from datetime import datetime, date, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, CallbackQueryHandler, filters
+from telegram.helpers import escape_markdown  # ← FIX: added for courier-name sanitization
 import openai
 from meta_uploader import process_new_order, run_upload
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -799,7 +805,10 @@ async def do_create_shipment(update_or_q, ctx):
             })
             lines = ["⚠️ *Bluedart & Delhivery unavailable.*\nPick a courier:\n"]
             for i, c in enumerate(surface_couriers[:10], 1):
-                lines.append(f"{i}. {c.get('courier_name','')} — ₹{c.get('rate',0)}")
+                # ← FIX: escape courier_name so a name like "India Post-Business Parcel_2.0"
+                # doesn't break Telegram's Markdown parser (unpaired "_")
+                safe_name = escape_markdown(c.get('courier_name',''), version=1)
+                lines.append(f"{i}. {safe_name} — ₹{c.get('rate',0)}")
             await reply.reply_text("\n".join(lines), parse_mode="Markdown")
             return
 
@@ -891,7 +900,8 @@ async def _finish_shipment_after_awb(reply, ctx, awb, chosen,
     except Exception as e:
         log.error(f"Meta error: {e}")
 
-    courier_label = chosen.get("courier_name","")
+    # ← FIX: escape courier_label before placing it into a parse_mode="Markdown" message
+    courier_label = escape_markdown(chosen.get("courier_name",""), version=1)
     await reply.reply_text(
         f"✅ *Shipment Created!*\n"
         f"Order: #{order_num} | {d.get('name','')} | {d.get('phone','')}\n"
@@ -1168,8 +1178,10 @@ async def do_reassign_courier(update, ctx, chosen_courier):
         shiprocket={"order_id": resp.get("order_id",""), "shipment_id": shipment_id,
                     "awb": awb, "courier": chosen_courier.get("courier_name",""),
                     "rate": chosen_courier.get("rate",0), "tracking": tracking})
+    # ← FIX: escape courier_name before placing it into a parse_mode="Markdown" message
+    safe_courier_name = escape_markdown(chosen_courier.get('courier_name',''), version=1)
     await update.message.reply_text(
-        f"✅ Reassigned!\n{chosen_courier.get('courier_name','')} | AWB: `{awb}`",
+        f"✅ Reassigned!\n{safe_courier_name} | AWB: `{awb}`",
         parse_mode="Markdown", reply_markup=MAIN_KB)
     label_url = generate_label(shipment_id)
     if label_url:
@@ -1265,7 +1277,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines = ["🔄 *Available Couriers (Surface):*\n"]
         for i,c in enumerate(sorted_c,1):
             tag = "⭐ Priority" if courier_auto_rank(c) < 2 else "Standard"
-            lines.append(f"{i}. {c.get('courier_name','')} — ₹{c.get('rate',0)} ({tag})")
+            # ← FIX: escape courier_name so a name with "_" doesn't break Markdown here either
+            safe_name = escape_markdown(c.get('courier_name',''), version=1)
+            lines.append(f"{i}. {safe_name} — ₹{c.get('rate',0)} ({tag})")
         await q.message.reply_text("\n".join(lines), parse_mode="Markdown")
         return
 
